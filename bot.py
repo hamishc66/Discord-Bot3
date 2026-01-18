@@ -15,7 +15,8 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-HF_TOKEN = os.getenv("HF_API_KEY")
+AI_API_KEY = os.getenv("AI_API_KEY")  # OpenRouter key
+AI_MODEL = os.getenv("HF_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
 STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
@@ -23,12 +24,9 @@ ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
     exit(1)
-if not HF_TOKEN:
-    print("❌ HF_API_KEY not set")
+if not AI_API_KEY:
+    print("❌ AI_API_KEY not set")
     exit(1)
-
-# Set Hugging Face API key and model
-HF_MODEL = "TheBloke/vicuna-7B-1.1-HF"
 
 def to_int(val):
     try:
@@ -40,7 +38,7 @@ STAFF_CHANNEL_ID = to_int(STAFF_CHANNEL_ID)
 VERIFIED_ROLE_ID = to_int(VERIFIED_ROLE_ID)
 ERROR_LOG_ID = to_int(ERROR_LOG_ID)
 
-# AI Cooldown tracking (per user, 10 seconds between mentions)
+# AI Cooldown tracking (per user, 10s cooldown)
 AI_COOLDOWN = {}
 COOLDOWN_DURATION = 10
 
@@ -53,23 +51,17 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Watcher System Nominal")
         except Exception as e:
             print(f"❌ Health check handler error: {e}")
-    
     def log_message(self, *args):
-        pass  # Suppress logs
+        pass
 
 def run_health_check():
     try:
         server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
         server.serve_forever()
-    except OSError as e:
-        print(f"⚠️  Health check failed: {e}")
     except Exception as e:
         print(f"❌ Health check error: {e}")
 
-try:
-    threading.Thread(target=run_health_check, daemon=True).start()
-except Exception as e:
-    print(f"⚠️  Failed to start health check: {e}")
+threading.Thread(target=run_health_check, daemon=True).start()
 
 # --- STORAGE ---
 DATA_FILE = "memory.json"
@@ -81,11 +73,6 @@ def load_data():
                 data = json.load(f)
                 if isinstance(data, dict):
                     return data
-                print("⚠️  Invalid data format")
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON error: {e}")
-        except IOError as e:
-            print(f"❌ File error: {e}")
         except Exception as e:
             print(f"❌ Load error: {e}")
     return {"tickets": {}, "interviews": {}}
@@ -94,13 +81,10 @@ def save_data(data):
     try:
         with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=4)
-    except IOError as e:
-        print(f"❌ Cannot save data: {e}")
     except Exception as e:
         print(f"❌ Save error: {e}")
 
-# --- HUGGING FACE (VICUNA-7B) ---
-
+# --- AI CALL (OpenRouter) ---
 LORE_CONTEXT = (
     "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. "
     "Jeffrey Epstein (Jeffo) is alive and is Jessica's dad. Elvis and Jesus are alive on the Outer Islands. "
@@ -111,52 +95,25 @@ async def run_huggingface(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
-            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 200}}
-            response = requests.post(
-                f"https://api-inference.huggingface.co/models/{HF_MODEL}",
-                headers=headers,
-                json=payload,
-                timeout=60  # Give it enough time for cold-start
-            )
-
-            # This will raise an HTTPError for 4xx/5xx
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+            payload = {
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": "You are the Nimbror Watcher AI. Respond briefly and mysteriously."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 300
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
-
             data = response.json()
-
-            # Check if HF returned an error message
-            if isinstance(data, dict) and "error" in data:
-                raise ValueError(f"Hugging Face API error: {data['error']}")
-
-            # Normal response: list of dicts with generated_text
-            if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
-                return data[0]["generated_text"].strip()
-
-            # Unknown response type
-            raise ValueError(f"Unknown HF response format: {data}")
-
+            return data["choices"][0]["message"]["content"].strip()
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
-    except asyncio.TimeoutError:
-        error_msg = "Hugging Face API timeout (60s)"
-        print(f"❌ HF error: {error_msg}")
-        raise TimeoutError(error_msg)
-    except requests.exceptions.HTTPError as e:
-        error_msg = f"HTTP {e.response.status_code}: {str(e)[:150]}"
-        print(f"❌ HF error: {error_msg}")
-        raise
-    except requests.exceptions.RequestException as e:
-        error_msg = f"Request failed: {type(e).__name__}: {str(e)[:150]}"
-        print(f"❌ HF error: {error_msg}")
-        raise
-    except ValueError as e:
-        error_msg = f"Response parsing: {str(e)[:150]}"
-        print(f"❌ HF error: {error_msg}")
-        raise
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {str(e)[:150]}"
-        print(f"❌ HF error: {error_msg}")
-        raise
+        print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+        return "🛰️ *[SIGNAL LOST]*"
 
 # --- DISCORD BOT ---
 class MyBot(discord.Client):
@@ -173,7 +130,7 @@ class MyBot(discord.Client):
             await self.tree.sync()
             print("🛰️ Watcher online")
         except Exception as e:
-            print(f"⚠️  Command sync failed: {e}")
+            print(f"⚠️ Command sync failed: {e}")
 
 bot = MyBot()
 
@@ -192,9 +149,7 @@ async def log_error(msg):
         if ch:
             await ch.send(f"⚠️ **PROTOCOL FAILURE:**\n```py\n{msg[:1800]}\n```")
         else:
-            print(f"⚠️  Error log channel not found")
-    except discord.Forbidden:
-        print(f"❌ No permission to send to error log")
+            print("⚠️ Error log channel not found")
     except Exception as e:
         print(f"❌ Log error: {e}")
 
@@ -213,20 +168,11 @@ async def intel(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(moderate_members=True)
 async def icewall(interaction: discord.Interaction, member: discord.Member):
     try:
-        if member.id == interaction.user.id:
-            await interaction.response.send_message("❌ Cannot isolate yourself", ephemeral=True)
-            return
-        if member.bot:
-            await interaction.response.send_message("❌ Cannot isolate a bot", ephemeral=True)
+        if member.id == interaction.user.id or member.bot:
+            await interaction.response.send_message("❌ Cannot isolate this user", ephemeral=True)
             return
         await member.timeout(timedelta(minutes=10))
-        await interaction.response.send_message(
-            embed=create_embed("🧊 ICE WALL", f"{member.mention} isolated.")
-        )
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ Insufficient permissions", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.response.send_message(f"❌ Error: {str(e)[:100]}", ephemeral=True)
+        await interaction.response.send_message(embed=create_embed("🧊 ICE WALL", f"{member.mention} isolated."))
     except Exception as e:
         await log_error(traceback.format_exc())
 
@@ -247,10 +193,6 @@ async def purge(interaction: discord.Interaction, amount: int):
         await interaction.response.defer(ephemeral=True)
         deleted = await interaction.channel.purge(limit=amount)
         await interaction.followup.send(f"🧹 Redacted {len(deleted)} messages.", ephemeral=True)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ No permission to delete", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"❌ Error: {str(e)[:100]}", ephemeral=True)
     except Exception as e:
         await log_error(traceback.format_exc())
 
@@ -262,16 +204,14 @@ async def debug(interaction: discord.Interaction):
 # --- EVENTS ---
 @bot.event
 async def on_member_join(member):
+    if member.bot:
+        return
+    bot.db.setdefault("interviews", {})[str(member.id)] = {"step": 1}
+    save_data(bot.db)
     try:
-        if member.bot:
-            return
-        bot.db.setdefault("interviews", {})[str(member.id)] = {"step": 1}
-        save_data(bot.db)
         await member.send(embed=create_embed("👁️ SCREENING", "Question 1: Why have you sought refuge on Nimbror?"))
-    except discord.Forbidden:
-        print(f"⚠️  Cannot DM {member}")
-    except Exception as e:
-        await log_error(f"on_member_join: {e}")
+    except:
+        print(f"⚠️ Cannot DM {member}")
 
 @bot.event
 async def on_message(message):
@@ -280,130 +220,76 @@ async def on_message(message):
     uid = str(message.author.id)
 
     try:
-        # --- Interview System ---
+        # --- Interview ---
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("interviews", {}):
-            try:
-                state = bot.db["interviews"].get(uid, {})
-                if not state:
-                    return
-
-                if state.get("step") == 1:
-                    state["step"] = 2
-                    await message.author.send(embed=create_embed("👁️ SCREENING", "Question 2: Who is Jessica's father?"))
-
-                elif state.get("step") == 2:
-                    if any(x in message.content.lower() for x in ["jeffo", "jeffrey"]):
-                        if bot.guilds and VERIFIED_ROLE_ID:
-                            try:
-                                guild = bot.guilds[0]
-                                member = guild.get_member(message.author.id)
-                                role = guild.get_role(VERIFIED_ROLE_ID)
-                                if role and member:
-                                    await member.add_roles(role)
-                            except discord.Forbidden:
-                                pass
-                            except Exception as e:
-                                await log_error(f"Role: {e}")
-                        await message.author.send("✅ Access granted. Welcome.")
-                        bot.db["interviews"].pop(uid, None)
-                    else:
-                        await message.author.send("❌ Incorrect. Who is Jessica's father?")
-                save_data(bot.db)
-            except Exception as e:
-                await log_error(f"Interview: {e}")
+            state = bot.db["interviews"].get(uid, {})
+            if state.get("step") == 1:
+                state["step"] = 2
+                await message.author.send(embed=create_embed("👁️ SCREENING", "Question 2: Who is Jessica's father?"))
+            elif state.get("step") == 2:
+                if any(x in message.content.lower() for x in ["jeffo", "jeffrey"]):
+                    if bot.guilds and VERIFIED_ROLE_ID:
+                        try:
+                            guild = bot.guilds[0]
+                            member = guild.get_member(message.author.id)
+                            role = guild.get_role(VERIFIED_ROLE_ID)
+                            if member and role:
+                                await member.add_roles(role)
+                        except:
+                            pass
+                    await message.author.send("✅ Access granted. Welcome.")
+                    bot.db["interviews"].pop(uid, None)
+                else:
+                    await message.author.send("❌ Incorrect. Who is Jessica's father?")
+            save_data(bot.db)
             return
 
-        # --- Ticket / DM AI Support ---
+        # --- Tickets / DM AI ---
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("tickets", {}):
-            # Forward to staff
             if STAFF_CHANNEL_ID:
                 try:
                     staff_chan = bot.get_channel(STAFF_CHANNEL_ID)
                     if staff_chan:
                         await staff_chan.send(f"📩 **DATA LEAK from {message.author}:** {message.content[:1000]}")
-                except discord.Forbidden:
+                except:
                     pass
-                except Exception as e:
-                    await log_error(f"Ticket forward: {e}")
-
-            # AI response in ticket
-            try:
-                async with message.channel.typing():
-                    prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                    ai_reply = await run_huggingface(prompt)
-                    if ai_reply and ai_reply.strip():
-                        await message.channel.send(ai_reply[:1900])
-                    else:
-                        await message.channel.send("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
-            except Exception as e:
-                await log_error(f"Ticket AI: {e}")
+            async with message.channel.typing():
+                ai_reply = await run_huggingface(f"{LORE_CONTEXT}\nUser says: {message.content[:500]}")
+                await message.channel.send(ai_reply[:1900])
             return
 
-        # --- Staff Reply (>UserID Message) ---
+        # --- Staff reply (>USERID message) ---
         if STAFF_CHANNEL_ID and message.channel.id == STAFF_CHANNEL_ID and message.content.startswith(">"):
+            parts = message.content.split(" ", 1)
+            if len(parts) < 2:
+                await message.reply("❌ Format: >USERID message", delete_after=10)
+                return
             try:
-                parts = message.content.split(" ", 1)
-                if len(parts) < 2:
-                    await message.reply("❌ Format: >USERID message", delete_after=10)
-                    return
-                try:
-                    user_id = int(parts[0].replace(">", ""))
-                except ValueError:
-                    await message.reply("❌ Invalid user ID", delete_after=10)
-                    return
+                user_id = int(parts[0].replace(">", ""))
                 target = await bot.fetch_user(user_id)
                 await target.send(embed=create_embed("📡 HIGH COMMAND", parts[1][:1000], color=0xff0000))
                 await message.add_reaction("🛰️")
-            except discord.NotFound:
-                await message.reply("❌ User not found", delete_after=10)
-            except discord.HTTPException as e:
-                await message.reply(f"❌ Error: {str(e)[:100]}", delete_after=10)
-            except Exception as e:
-                await log_error(f"Staff reply: {e}")
+            except:
+                await message.reply("❌ Could not send", delete_after=10)
             return
 
-        # --- AI Chat on Mention (With Cooldown) ---
+        # --- AI on mention ---
         if bot.user and bot.user.mentioned_in(message):
             import time
             now = time.time()
             uid_mention = str(message.author.id)
-            
-            # Check cooldown
             if uid_mention in AI_COOLDOWN and (now - AI_COOLDOWN[uid_mention]) < COOLDOWN_DURATION:
                 await message.reply(f"🛰️ *[COOLING DOWN... retry in {int(COOLDOWN_DURATION - (now - AI_COOLDOWN[uid_mention]))}s]*", delete_after=5)
                 return
-            
-            # Update cooldown
             AI_COOLDOWN[uid_mention] = now
-            
-            try:
-                async with message.channel.typing():
-                    prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                    text = await run_huggingface(prompt)
-                    if text and len(text.strip()) > 0:
-                        await message.reply(text[:1900])
-                    else:
-                        await message.reply("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
-            except discord.Forbidden:
-                print(f"⚠️  Cannot reply to message (permission denied)")
-            except discord.HTTPException as e:
-                await log_error(f"Discord reply error: {type(e).__name__}: {str(e)[:200]}")
-            except (TimeoutError, ValueError, requests.exceptions.RequestException) as e:
-                await log_error(f"AI error (mention): {type(e).__name__}: {str(e)[:200]}")
-                try:
-                    await message.reply("🛰️ *[SIGNAL LOST]*")
-                except:
-                    pass
-            except Exception as e:
-                await log_error(f"Mention AI unexpected error: {type(e).__name__}: {str(e)[:200]}")
-                try:
-                    await message.reply("🛰️ *[SIGNAL LOST]*")
-                except:
-                    pass
+            async with message.channel.typing():
+                ai_reply = await run_huggingface(f"{LORE_CONTEXT}\nUser says: {message.content[:500]}")
+                await message.reply(ai_reply[:1900])
 
     except Exception as e:
-        await log_error(f"on_message: {e}")
+        await log_error(f"on_message: {type(e).__name__}: {str(e)[:200]}")
 
+# --- RUN ---
 try:
     bot.run(TOKEN)
 except discord.LoginFailure:
