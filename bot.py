@@ -31,7 +31,12 @@ if not OPENAI_KEY:
 # Set OpenAI API key
 openai.api_key = OPENAI_KEY
 
-# Convert IDs safely
+# Initialize OpenAI client for v1.0.0+
+try:
+    client = openai.OpenAI(api_key=OPENAI_KEY)
+except Exception as e:
+    print(f"⚠️  OpenAI client init failed: {e}")
+    client = None
 def to_int(val):
     try:
         return int(val) if val else None
@@ -102,7 +107,7 @@ def save_data(data):
         print(f"❌ Save error: {e}")
 
 # --- OPENAI (GPT-3.5-TURBO) ---
-client_ready = True
+client_ready = client is not None
 
 LORE_CONTEXT = (
     "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. "
@@ -116,13 +121,13 @@ async def run_openai(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=200,
                 temperature=0.7
             )
-            return response['choices'][0]['message']['content'].strip()
+            return response.choices[0].message.content.strip()
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
         return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
