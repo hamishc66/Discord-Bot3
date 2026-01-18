@@ -15,7 +15,7 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-AI_API_KEY = os.getenv("AI_API_KEY")
+HF_TOKEN = os.getenv("HF_API_KEY")
 STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
@@ -23,18 +23,19 @@ ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
     exit(1)
-if not AI_API_KEY:
-    print("❌ AI_API_KEY not set")
+if not HF_TOKEN:
+    print("❌ HF_API_KEY not set")
     exit(1)
 
 # Set Hugging Face API key
-openai_api_key = AI_API_KEY
+openai_api_key = HF_TOKEN
 
 # Initialize Hugging Face client
+HF_MODEL = "TheBloke/vicuna-7B-1.1-HF"
 try:
     client = None  # Using requests directly
 except Exception as e:
-    print(f"⚠️  AI client init failed: {e}")
+    print(f"⚠️  HF client init failed: {e}")
     client = None
 def to_int(val):
     try:
@@ -120,32 +121,51 @@ async def run_openai(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
-            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
-            api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
-            payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "max_length": 200,
-                    "temperature": 0.7
-                }
-            }
-            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+            payload = {"inputs": prompt, "parameters": {"max_new_tokens": 200}}
+            response = requests.post(
+                f"https://api-inference.huggingface.co/models/{HF_MODEL}",
+                headers=headers,
+                json=payload,
+                timeout=60  # Give it enough time for cold-start
+            )
+
+            # This will raise an HTTPError for 4xx/5xx
             response.raise_for_status()
-            result = response.json()
-            if isinstance(result, list) and len(result) > 0:
-                return result[0].get('generated_text', '🛰️ *[SIGNAL LOST]*').strip()
-            return "🛰️ *[SIGNAL LOST]*"
-        return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
+
+            data = response.json()
+
+            # Check if HF returned an error message
+            if isinstance(data, dict) and "error" in data:
+                raise ValueError(f"Hugging Face API error: {data['error']}")
+
+            # Normal response: list of dicts with generated_text
+            if isinstance(data, list) and len(data) > 0 and "generated_text" in data[0]:
+                return data[0]["generated_text"].strip()
+
+            # Unknown response type
+            raise ValueError(f"Unknown HF response format: {data}")
+
+        return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
     except asyncio.TimeoutError:
-        return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
+        error_msg = "Hugging Face API timeout (60s)"
+        print(f"❌ HF error: {error_msg}")
+        raise TimeoutError(error_msg)
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            print("❌ AI error: RateLimitError - quota reached")
-            return "🛰️ *[API QUOTA REACHED]*"
-        print(f"❌ AI error: HTTP {e.response.status_code}")
+        error_msg = f"HTTP {e.response.status_code}: {str(e)[:150]}"
+        print(f"❌ HF error: {error_msg}")
+        raise
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Request failed: {type(e).__name__}: {str(e)[:150]}"
+        print(f"❌ HF error: {error_msg}")
+        raise
+    except ValueError as e:
+        error_msg = f"Response parsing: {str(e)[:150]}"
+        print(f"❌ HF error: {error_msg}")
         raise
     except Exception as e:
-        print(f"❌ AI error: {type(e).__name__}: {str(e)[:200]}")
+        error_msg = f"{type(e).__name__}: {str(e)[:150]}"
+        print(f"❌ HF error: {error_msg}")
         raise
 
 # --- DISCORD BOT ---
@@ -378,14 +398,19 @@ async def on_message(message):
             except discord.Forbidden:
                 print(f"⚠️  Cannot reply to message (permission denied)")
             except discord.HTTPException as e:
-                print(f"❌ Discord error replying: {type(e).__name__}")
-                await log_error(f"AI reply: {e}")
-            except Exception as e:
+                await log_error(f"Discord reply error: {type(e).__name__}: {str(e)[:200]}")
+            except (TimeoutError, ValueError, requests.exceptions.RequestException) as e:
+                await log_error(f"AI error (mention): {type(e).__name__}: {str(e)[:200]}")
                 try:
                     await message.reply("🛰️ *[SIGNAL LOST]*")
                 except:
                     pass
-                await log_error(f"AI: {e}")
+            except Exception as e:
+                await log_error(f"Mention AI unexpected error: {type(e).__name__}: {str(e)[:200]}")
+                try:
+                    await message.reply("🛰️ *[SIGNAL LOST]*")
+                except:
+                    pass
 
     except Exception as e:
         await log_error(f"on_message: {e}")
