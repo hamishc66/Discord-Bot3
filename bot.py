@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from discord.ui import View, Button, Modal, TextInput, Select, TextInputStyle
+from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import tasks
 import requests
 import os
@@ -328,7 +328,7 @@ class TicketTypeSelect(View):
 
 class StaffNoteModal(Modal, title="Add Ticket Note"):
     """Modal for staff to add notes to tickets."""
-    note = TextInput(label="Note", style=TextInputStyle.paragraph)
+    note = TextInput(label="Note", style=discord.TextInputStyle.paragraph)
     
     def __init__(self, user_id: int):
         super().__init__()
