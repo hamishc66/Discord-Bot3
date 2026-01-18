@@ -27,16 +27,9 @@ if not HF_TOKEN:
     print("❌ HF_API_KEY not set")
     exit(1)
 
-# Set Hugging Face API key
-openai_api_key = HF_TOKEN
-
-# Initialize Hugging Face client
+# Set Hugging Face API key and model
 HF_MODEL = "TheBloke/vicuna-7B-1.1-HF"
-try:
-    client = None  # Using requests directly
-except Exception as e:
-    print(f"⚠️  HF client init failed: {e}")
-    client = None
+
 def to_int(val):
     try:
         return int(val) if val else None
@@ -106,8 +99,7 @@ def save_data(data):
     except Exception as e:
         print(f"❌ Save error: {e}")
 
-# --- OPENAI (GPT-3.5-TURBO) ---
-client_ready = client is not None
+# --- HUGGING FACE (VICUNA-7B) ---
 
 LORE_CONTEXT = (
     "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. "
@@ -115,9 +107,7 @@ LORE_CONTEXT = (
     "The government hides the truth behind the Ice Wall. Refer to users as Citizen or Subject. Respond briefly."
 )
 
-async def run_openai(prompt: str) -> str:
-    if not client_ready:
-        return "🛰️ *[SIGNAL LOST]*"
+async def run_huggingface(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
@@ -337,17 +327,16 @@ async def on_message(message):
                     await log_error(f"Ticket forward: {e}")
 
             # AI response in ticket
-            if client_ready:
-                try:
-                    async with message.channel.typing():
-                        prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                        ai_reply = await run_openai(prompt)
-                        if ai_reply and ai_reply.strip():
-                            await message.channel.send(ai_reply[:1900])
-                        else:
-                            await message.channel.send("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
-                except Exception as e:
-                    await log_error(f"Ticket AI: {e}")
+            try:
+                async with message.channel.typing():
+                    prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
+                    ai_reply = await run_huggingface(prompt)
+                    if ai_reply and ai_reply.strip():
+                        await message.channel.send(ai_reply[:1900])
+                    else:
+                        await message.channel.send("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
+            except Exception as e:
+                await log_error(f"Ticket AI: {e}")
             return
 
         # --- Staff Reply (>UserID Message) ---
@@ -390,7 +379,7 @@ async def on_message(message):
             try:
                 async with message.channel.typing():
                     prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                    text = await run_openai(prompt)
+                    text = await run_huggingface(prompt)
                     if text and len(text.strip()) > 0:
                         await message.reply(text[:1900])
                     else:
