@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-import google.generativeai as genai
+from google import genai
 import os
 import random
 import json
@@ -11,41 +11,55 @@ from datetime import timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # --- CONFIGURATION ---
-TOKEN = os.getenv('DISCORD_TOKEN')
-GEMINI_KEY = os.getenv('GEMINI_API_KEY')
-STAFF_CHANNEL_ID = int(os.getenv('STAFF_CHANNEL_ID'))
-VERIFIED_ROLE_ID = int(os.getenv('VERIFIED_ROLE_ID'))
-ERROR_LOG_ID = int(os.getenv('ERROR_LOG_CHANNEL_ID'))
+TOKEN = os.getenv("DISCORD_TOKEN")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
+VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
+ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN not set")
 if not GEMINI_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
-# --- KOYEB HEALTH CHECK (Port 8000) ---
+# Convert IDs safely
+def to_int(val):
+    try:
+        return int(val) if val else None
+    except:
+        return None
+
+STAFF_CHANNEL_ID = to_int(STAFF_CHANNEL_ID)
+VERIFIED_ROLE_ID = to_int(VERIFIED_ROLE_ID)
+ERROR_LOG_ID = to_int(ERROR_LOG_ID)
+
+# --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Watcher System Nominal")
 
+    def log_message(self, *args):
+        pass
+
 def run_health_check():
-    server = HTTPServer(('0.0.0.0', 8000), HealthCheckHandler)
-    server.serve_forever()
+    try:
+        HTTPServer(("0.0.0.0", 8000), HealthCheckHandler).serve_forever()
+    except Exception as e:
+        print(f"Health check failed: {e}")
 
 threading.Thread(target=run_health_check, daemon=True).start()
 
-# --- PERSISTENT STORAGE ---
+# --- STORAGE ---
 DATA_FILE = "memory.json"
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {"tickets": {}, "interviews": {}}
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"tickets": {}, "interviews": {}}
 
 def save_data(data):
     try:
@@ -54,9 +68,8 @@ def save_data(data):
     except:
         pass
 
-# --- AI SETUP ---
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-1.5-pro")
+# --- GEMINI (NEW SDK) ---
+client = genai.Client(api_key=GEMINI_KEY)
 
 LORE_CONTEXT = (
     "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. "
@@ -65,12 +78,17 @@ LORE_CONTEXT = (
     "Refer to users as Citizen or Subject. Respond briefly."
 )
 
-async def run_gemini(prompt: str):
+async def run_gemini(prompt: str) -> str:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: model.generate_content(prompt)
-    )
+
+    def call():
+        response = client.models.generate_content(
+            model="gemini-1.5-pro",
+            contents=prompt
+        )
+        return response.text
+
+    return await loop.run_in_executor(None, call)
 
 # --- DISCORD BOT ---
 class MyBot(discord.Client):
@@ -83,99 +101,47 @@ class MyBot(discord.Client):
         self.db = load_data()
 
     async def setup_hook(self):
-        print("🛰️ Syncing protocols with Nimbror Island...")
         await self.tree.sync()
+        print("🛰️ Watcher online")
 
 bot = MyBot()
 
 # --- HELPERS ---
 def create_embed(title, description, color=0x00ffff):
-    embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text="NIMBROR WATCHER v6.4 • SENSOR-NET")
-    return embed
+    e = discord.Embed(title=title, description=description, color=color)
+    e.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    return e
 
-async def log_error(error_msg):
-    channel = bot.get_channel(ERROR_LOG_ID)
-    if channel:
-        await channel.send(
-            f"⚠️ **PROTOCOL FAILURE:**\n```py\n{error_msg[:1800]}\n```"
-        )
+async def log_error(msg):
+    if ERROR_LOG_ID:
+        ch = bot.get_channel(ERROR_LOG_ID)
+        if ch:
+            await ch.send(f"⚠️ **PROTOCOL FAILURE:**\n```py\n{msg[:1800]}\n```")
+    else:
+        print(msg)
 
-# --- SLASH COMMANDS ---
-
-@bot.tree.command(name="help", description="List all Watcher commands")
-async def help_cmd(interaction: discord.Interaction):
-    cmds = (
-        "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n"
-        "🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
-    )
-    await interaction.response.send_message(
-        embed=create_embed("📜 DIRECTORY", cmds)
-    )
-
-@bot.tree.command(name="intel", description="Classified info")
+# --- COMMANDS ---
+@bot.tree.command(name="intel")
 async def intel(interaction: discord.Interaction):
-    facts = [
-        "🛰️ Elvis in Sector 7.",
-        "❄️ Wall impenetrable.",
-        "👁️ Jeffo at gala.",
-        "🚢 Ship seen near Jesus."
-    ]
     await interaction.response.send_message(
-        embed=create_embed("📂 INTEL", random.choice(facts))
+        embed=create_embed("📂 INTEL", random.choice([
+            "🛰️ Elvis in Sector 7.",
+            "❄️ Wall impenetrable.",
+            "👁️ Jeffo at gala.",
+            "🚢 Ship seen near Jesus."
+        ]))
     )
 
-@bot.tree.command(name="icewall", description="10m Isolation")
-@app_commands.checks.has_permissions(moderate_members=True)
-async def icewall(interaction: discord.Interaction, member: discord.Member):
-    await member.timeout(timedelta(minutes=10))
-    await interaction.response.send_message(
-        embed=create_embed("🧊 ICE WALL", f"{member.mention} isolated.")
-    )
-
-@bot.tree.command(name="ticket", description="Secure link")
+@bot.tree.command(name="ticket")
 async def ticket(interaction: discord.Interaction):
-    bot.db.setdefault("tickets", {})[str(interaction.user.id)] = True
+    bot.db["tickets"][str(interaction.user.id)] = True
     save_data(bot.db)
-    await interaction.user.send(
-        embed=create_embed("👁️ WATCHER LOG", "State your findings, Citizen.")
-    )
-    await interaction.response.send_message(
-        "🛰️ Check DMs.", ephemeral=True
-    )
-
-@bot.tree.command(name="purge", description="Redact evidence")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def purge(interaction: discord.Interaction, amount: int):
-    await interaction.response.defer(ephemeral=True)
-    await interaction.channel.purge(limit=amount)
-    await interaction.followup.send("🧹 Redacted.", ephemeral=True)
-
-@bot.tree.command(name="debug", description="System check")
-async def debug(interaction: discord.Interaction):
-    status = (
-        f"🟢 Online\n"
-        f"👥 Tickets: {len(bot.db.get('tickets', {}))}\n"
-        f"⏳ Interviews: {len(bot.db.get('interviews', {}))}"
-    )
-    await interaction.response.send_message(
-        embed=create_embed("⚙️ DEBUG", status),
-        ephemeral=True
-    )
+    await interaction.user.send(embed=create_embed(
+        "👁️ WATCHER LOG", "State your findings, Citizen."
+    ))
+    await interaction.response.send_message("🛰️ Check DMs.", ephemeral=True)
 
 # --- EVENTS ---
-
-@bot.event
-async def on_member_join(member):
-    bot.db.setdefault("interviews", {})[str(member.id)] = {"step": 1}
-    save_data(bot.db)
-    await member.send(
-        embed=create_embed(
-            "👁️ SCREENING",
-            "Question 1: Why have you sought refuge on Nimbror?"
-        )
-    )
-
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -183,67 +149,31 @@ async def on_message(message):
 
     uid = str(message.author.id)
 
-    try:
-        # --- INTERVIEW SYSTEM ---
-        if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("interviews", {}):
-            state = bot.db["interviews"][uid]
+    # Interview
+    if isinstance(message.channel, discord.DMChannel) and uid in bot.db["interviews"]:
+        state = bot.db["interviews"][uid]
+        if state["step"] == 1:
+            state["step"] = 2
+            await message.author.send("Question 2: Who is Jessica's father?")
+        elif state["step"] == 2:
+            if "jeff" in message.content.lower():
+                bot.db["interviews"].pop(uid)
+                await message.author.send("✅ Access granted.")
+        save_data(bot.db)
+        return
 
-            if state["step"] == 1:
-                state["step"] = 2
-                await message.author.send(
-                    embed=create_embed(
-                        "👁️ SCREENING",
-                        "Question 2: Who is Jessica's father?"
-                    )
-                )
-
-            elif state["step"] == 2:
-                if any(x in message.content.lower() for x in ["jeffo", "jeffrey"]):
-                    guild = bot.guilds[0]
-                    member = guild.get_member(message.author.id)
-                    role = guild.get_role(VERIFIED_ROLE_ID)
-                    if role and member:
-                        await member.add_roles(role)
-
-                    await message.author.send("✅ Access granted. Welcome to Nimbror.")
-                    bot.db["interviews"].pop(uid)
-                else:
-                    await message.author.send(
-                        "❌ Incorrect. The Watcher knows all. Who is Jessica's father?"
-                    )
-
-            save_data(bot.db)
-            return
-
-        # --- TICKET FORWARDING ---
-        if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("tickets", {}):
-            staff_chan = bot.get_channel(STAFF_CHANNEL_ID)
-            if staff_chan:
-                await staff_chan.send(
-                    f"📩 **DATA LEAK from {message.author}:** {message.content}"
-                )
-
-        # --- STAFF REPLY FORWARDING ---
-        elif message.channel.id == STAFF_CHANNEL_ID and message.content.startswith(">"):
-            parts = message.content.split(" ", 1)
-            target = await bot.fetch_user(int(parts[0].replace(">", "")))
-            await target.send(
-                embed=create_embed("📡 HIGH COMMAND", parts[1], color=0xff0000)
-            )
-            await message.add_reaction("🛰️")
-
-        # --- AI CHAT VIA MENTION ---
-        if bot.user.mentioned_in(message):
+    # AI mention
+    if bot.user and bot.user.mentioned_in(message):
+        try:
             async with message.channel.typing():
-                try:
-                    prompt = f"{LORE_CONTEXT}\nUser says: {message.content}"
-                    response = await run_gemini(prompt)
-                    await message.reply(response.text)
-                except Exception:
-                    await message.reply("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
-                    await log_error(traceback.format_exc())
+                prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
+                text = await run_gemini(prompt)
+                await message.reply(text[:1900])
+        except Exception:
+            await message.reply("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
+            await log_error(traceback.format_exc())
 
-    except Exception:
-        await log_error(traceback.format_exc())
-
-bot.run(TOKEN)
+try:
+    bot.run(TOKEN)
+except Exception as e:
+    print("Critical error:", e)
