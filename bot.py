@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 import openai
+from openai import RateLimitError, APIError
 import os
 import random
 import json
@@ -125,9 +126,12 @@ async def run_openai(prompt: str) -> str:
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
         return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
-    except openai.error.RateLimitError:
+    except RateLimitError:
         print("❌ OpenAI error: RateLimitError - quota reached")
         return "🛰️ *[API QUOTA REACHED]*"
+    except APIError as e:
+        print(f"❌ OpenAI error: {type(e).__name__}: {str(e)[:200]}")
+        raise
     except Exception as e:
         print(f"❌ OpenAI error: {type(e).__name__}: {str(e)[:200]}")
         raise
