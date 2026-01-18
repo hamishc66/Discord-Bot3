@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 import google.generativeai as genai
+from google.generativeai.types import RequestOptions
 import os
 import random
 import json
@@ -16,7 +17,7 @@ STAFF_CHANNEL_ID = int(os.getenv('STAFF_CHANNEL_ID'))
 VERIFIED_ROLE_ID = int(os.getenv('VERIFIED_ROLE_ID'))
 ERROR_LOG_ID = int(os.getenv('ERROR_LOG_CHANNEL_ID'))
 
-# --- KOYEB HEALTH CHECK ---
+# --- KOYEB HEALTH CHECK (Port 8000) ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -39,13 +40,14 @@ def load_data():
     return {"tickets": {}, "interviews": {}}
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f: json.dump(data, f, indent=4)
+    try:
+        with open(DATA_FILE, "w") as f: json.dump(data, f, indent=4)
+    except: pass
 
-# --- LORE & AI CONFIG ---
+# --- AI SETUP ---
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
-
-LORE_CONTEXT = "Your name is The Nimbror Watcher. Clinical and mysterious. Jeffo is Jessica's dad and alive. Elvis and Jesus are alive on the Outer Islands. Respond briefly."
+LORE_CONTEXT = "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. Jeffrey Epstein (Jeffo) is alive and is Jessica's dad. Elvis and Jesus are alive on the Outer Islands. The government hides the truth behind the Ice Wall. Refer to users as Citizen or Subject. Respond briefly."
 
 class MyBot(discord.Client):
     def __init__(self):
@@ -57,6 +59,7 @@ class MyBot(discord.Client):
         self.db = load_data()
 
     async def setup_hook(self):
+        print("🛰️ Syncing protocols with Nimbror Island...")
         await self.tree.sync()
 
 bot = MyBot()
@@ -64,7 +67,7 @@ bot = MyBot()
 # --- HELPERS ---
 def create_embed(title, description, color=0x00ffff):
     embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text="NIMBROR WATCHER v6.3 • SENSOR-NET")
+    embed.set_footer(text="NIMBROR WATCHER v6.4 • SENSOR-NET")
     return embed
 
 async def log_error(error_msg):
@@ -72,11 +75,16 @@ async def log_error(error_msg):
     if channel:
         await channel.send(f"⚠️ **PROTOCOL FAILURE:**\n```py\n{error_msg[:1800]}\n```")
 
-# --- COMMANDS ---
+# --- SLASH COMMANDS ---
+
+@bot.tree.command(name="help", description="List all Watcher commands")
+async def help_cmd(interaction: discord.Interaction):
+    cmds = "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
+    await interaction.response.send_message(embed=create_embed("📜 DIRECTORY", cmds))
 
 @bot.tree.command(name="intel", description="Classified info")
 async def intel(interaction: discord.Interaction):
-    facts = ["🛰️ Elvis in Sector 7.", "❄️ Wall impenetrable.", "👁️ Jeffo at gala."]
+    facts = ["🛰️ Elvis in Sector 7.", "❄️ Wall impenetrable.", "👁️ Jeffo at gala.", "🚢 Ship seen near Jesus."]
     await interaction.response.send_message(embed=create_embed("📂 INTEL", random.choice(facts)))
 
 @bot.tree.command(name="icewall", description="10m Isolation")
@@ -87,9 +95,9 @@ async def icewall(interaction: discord.Interaction, member: discord.Member):
 
 @bot.tree.command(name="ticket", description="Secure link")
 async def ticket(interaction: discord.Interaction):
-    bot.db["tickets"][str(interaction.user.id)] = True
+    bot.db.setdefault("tickets", {})[str(interaction.user.id)] = True
     save_data(bot.db)
-    await interaction.user.send(embed=create_embed("👁️ WATCHER LOG", "State your findings."))
+    await interaction.user.send(embed=create_embed("👁️ WATCHER LOG", "State your findings, Citizen."))
     await interaction.response.send_message("🛰️ Check DMs.", ephemeral=True)
 
 @bot.tree.command(name="purge", description="Redact evidence")
@@ -97,12 +105,18 @@ async def ticket(interaction: discord.Interaction):
 async def purge(interaction: discord.Interaction, amount: int):
     await interaction.response.defer(ephemeral=True)
     await interaction.channel.purge(limit=amount)
+    await interaction.followup.send("🧹 Redacted.", ephemeral=True)
+
+@bot.tree.command(name="debug", description="System check")
+async def debug(interaction: discord.Interaction):
+    status = f"🟢 Online\n👥 Tickets: {len(bot.db.get('tickets',{}))}\n⏳ Interviews: {len(bot.db.get('interviews',{}))}"
+    await interaction.response.send_message(embed=create_embed("⚙️ DEBUG", status), ephemeral=True)
 
 # --- EVENTS ---
 
 @bot.event
 async def on_member_join(member):
-    bot.db["interviews"][str(member.id)] = {"step": 1}
+    bot.db.setdefault("interviews", {})[str(member.id)] = {"step": 1}
     save_data(bot.db)
     await member.send(embed=create_embed("👁️ SCREENING", "Question 1: Why have you sought refuge on Nimbror?"))
 
@@ -124,26 +138,36 @@ async def on_message(message):
                     member = guild.get_member(message.author.id)
                     role = guild.get_role(VERIFIED_ROLE_ID)
                     if role: await member.add_roles(role)
-                    await message.author.send("✅ Access granted. Welcome.")
+                    await message.author.send("✅ Access granted. Welcome to Nimbror.")
                     bot.db["interviews"].pop(uid)
                 else:
-                    await message.author.send("❌ Incorrect. Try again.")
+                    await message.author.send("❌ Incorrect. The Watcher knows all. Who is Jessica's father?")
             save_data(bot.db)
             return
 
         # 2. Ticket Forwarding
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("tickets", {}):
             staff_chan = bot.get_channel(STAFF_CHANNEL_ID)
-            await staff_chan.send(f"📩 **LEAK from {message.author}:** {message.content}")
+            if staff_chan: await staff_chan.send(f"📩 **DATA LEAK from {message.author}:** {message.content}")
 
-        # 3. AI Chat via Mention
+        # 3. Staff Reply Forwarding
+        elif message.channel.id == STAFF_CHANNEL_ID and message.content.startswith(">"):
+            parts = message.content.split(" ", 1)
+            target = await bot.fetch_user(int(parts[0].replace(">", "")))
+            await target.send(embed=create_embed("📡 HIGH COMMAND", parts[1], color=0xff0000))
+            await message.add_reaction("🛰️")
+
+        # 4. AI Chat via Mention
         if bot.user.mentioned_in(message):
-            try:
-                response = model.generate_content(f"{LORE_CONTEXT}\nUser: {message.content}")
-                await message.reply(response.text)
-            except:
-                await message.reply("🛰️ *[SIGNAL INTERFERENCE FROM THE ICE WALL... TRY AGAIN LATER]*")
-                await log_error(traceback.format_exc())
+            async with message.channel.typing():
+                try:
+                    prompt = f"{LORE_CONTEXT}\nUser says: {message.content}"
+                    # Fixed stable API call
+                    response = model.generate_content(prompt, request_options=RequestOptions(retry=None))
+                    await message.reply(response.text)
+                except Exception as e:
+                    await message.reply("🛰️ *[SIGNAL INTERFERENCE FROM THE ICE WALL]*")
+                    await log_error(traceback.format_exc())
             
     except Exception:
         await log_error(traceback.format_exc())
