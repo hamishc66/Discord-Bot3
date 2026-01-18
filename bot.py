@@ -16,7 +16,7 @@ STAFF_CHANNEL_ID = int(os.getenv('STAFF_CHANNEL_ID'))
 VERIFIED_ROLE_ID = int(os.getenv('VERIFIED_ROLE_ID'))
 ERROR_LOG_ID = int(os.getenv('ERROR_LOG_CHANNEL_ID'))
 
-# --- KOYEB HEALTH CHECK (Port 8000) ---
+# --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -41,16 +41,23 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, "w") as f: json.dump(data, f, indent=4)
 
-# --- LORE & AI ---
-LORE_PROMPT = """You are 'The Nimbror Watcher'. Clinical, mysterious, paranoid.
-- Jeffo (Epstein) is alive and Jessica's dad.
-- Elvis and Jesus are alive on the Outer Islands.
-- Refer to users as 'Citizen' or 'Subject'. Use 👁️, 🛰️, ❄️.
-- The government hides the truth behind the Ice Wall."""
-
+# --- LORE & AI CONFIG ---
 genai.configure(api_key=GEMINI_KEY)
-# Using 'gemini-1.5-flash' which is the current stable standard
-model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=LORE_PROMPT)
+
+# Using a simplified config to avoid the 404 error
+generation_config = {
+  "temperature": 0.9,
+  "top_p": 1,
+  "top_k": 1,
+  "max_output_tokens": 2048,
+}
+
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    generation_config=generation_config
+)
+
+LORE_CONTEXT = "Your name is The Nimbror Watcher. You are clinical, mysterious, and paranoid. Jeffo is Jessica's dad and alive. Elvis and Jesus are alive on the Outer Islands. Respond briefly and stay in character."
 
 class MyBot(discord.Client):
     def __init__(self):
@@ -63,30 +70,28 @@ class MyBot(discord.Client):
         self.db = load_data()
 
     async def setup_hook(self):
-        # --- FORCE SYNC LOGIC ---
-        print("🛰️ Syncing protocols with Nimbror Island...")
+        print("🛰️ Syncing protocols...")
         await self.tree.sync()
-        print("👁️ Watcher brain active and synced.")
 
 bot = MyBot()
 
-# --- HELPER: EMBEDS ---
+# --- HELPERS ---
 def create_embed(title, description, color=0x00ffff):
     embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text="NIMBROR WATCHER v6.1 • SENSOR-NET")
+    embed.set_footer(text="NIMBROR WATCHER v6.2 • SENSOR-NET")
     return embed
 
 async def log_error(error_msg):
     channel = bot.get_channel(ERROR_LOG_ID)
     if channel:
-        embed = create_embed("⚠️ SYSTEM ERROR DETECTED", f"```py\n{error_msg[:1900]}\n```", color=0xff0000)
+        embed = create_embed("⚠️ SYSTEM ERROR", f"```py\n{error_msg[:1900]}\n```", color=0xff0000)
         await channel.send(embed=embed)
 
-# --- SLASH COMMANDS ---
+# --- COMMANDS ---
 
-@bot.tree.command(name="help", description="List all Watcher commands")
+@bot.tree.command(name="help", description="List all commands")
 async def help_cmd(interaction: discord.Interaction):
-    cmds = "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
+    cmds = "`/intel`, `/ticket`, `/icewall`, `/purge`, `/debug`"
     await interaction.response.send_message(embed=create_embed("📜 DIRECTORY", cmds))
 
 @bot.tree.command(name="intel", description="Classified info")
@@ -135,7 +140,7 @@ async def on_message(message):
                 await message.author.send(embed=create_embed("👁️ SCREENING", "Question 2: Who is Jessica's father?"))
             elif state["step"] == 2:
                 if any(x in message.content.lower() for x in ["jeffo", "jeffrey"]):
-                    guild = message.author.mutual_guilds[0]
+                    guild = bot.guilds[0]
                     member = guild.get_member(message.author.id)
                     role = guild.get_role(VERIFIED_ROLE_ID)
                     if role and member: await member.add_roles(role)
@@ -158,14 +163,10 @@ async def on_message(message):
             await target.send(embed=create_embed("📡 HIGH COMMAND", parts[1], color=0xff0000))
             await message.add_reaction("🛰️")
 
-        # 4. AI Chat via Mention
+        # 4. AI Chat via Mention (Updated Logic)
         if bot.user.mentioned_in(message):
-            # Start a session if it doesn't exist
-            if uid not in bot.chat_sessions:
-                bot.chat_sessions[uid] = model.start_chat(history=[])
-            
-            # Use await for the response in case of lag
-            response = bot.chat_sessions[uid].send_message(message.content)
+            prompt = f"{LORE_CONTEXT}\n\nUser said: {message.content}"
+            response = model.generate_content(prompt)
             await message.reply(response.text)
             
     except Exception:
