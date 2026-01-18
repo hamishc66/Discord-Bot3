@@ -109,21 +109,17 @@ async def run_gemini(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
-            try:
-                response = client.models.generate_content(
-                    model="gemini-1.5-pro",
-                    contents=[{"role": "user", "parts": [{"text": prompt}]}]
-                )
-                return response.text if response and response.text else "🛰️ *[SIGNAL LOST]*"
-            except Exception as e:
-                print(f"❌ Gemini API error: {type(e).__name__}: {str(e)[:100]}")
-                return "🛰️ *[SIGNAL LOST]*"
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"role": "user", "parts": [{"text": prompt}]}]
+            )
+            return response.text if response and response.text else "🛰️ *[SIGNAL LOST]*"
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
         return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
     except Exception as e:
         print(f"❌ Gemini error: {type(e).__name__}: {str(e)[:200]}")
-        return "🛰️ *[SIGNAL LOST]*"
+        raise
 
 # --- DISCORD BOT ---
 class MyBot(discord.Client):
