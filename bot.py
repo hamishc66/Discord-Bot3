@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from google import genai
+import openai
 import os
 import random
 import json
@@ -9,10 +9,13 @@ import threading
 import asyncio
 from datetime import timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
@@ -20,9 +23,12 @@ ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
     exit(1)
-if not GEMINI_KEY:
-    print("❌ GEMINI_API_KEY not set")
+if not OPENAI_KEY:
+    print("❌ OPENAI_API_KEY not set")
     exit(1)
+
+# Set OpenAI API key
+openai.api_key = OPENAI_KEY
 
 # Convert IDs safely
 def to_int(val):
@@ -34,6 +40,10 @@ def to_int(val):
 STAFF_CHANNEL_ID = to_int(STAFF_CHANNEL_ID)
 VERIFIED_ROLE_ID = to_int(VERIFIED_ROLE_ID)
 ERROR_LOG_ID = to_int(ERROR_LOG_ID)
+
+# AI Cooldown tracking (per user, 10 seconds between mentions)
+AI_COOLDOWN = {}
+COOLDOWN_DURATION = 10
 
 # --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -90,12 +100,8 @@ def save_data(data):
     except Exception as e:
         print(f"❌ Save error: {e}")
 
-# --- GEMINI (NEW SDK) ---
-try:
-    client = genai.Client(api_key=GEMINI_KEY)
-except Exception as e:
-    print(f"⚠️  Gemini client init failed: {e}")
-    client = None
+# --- OPENAI (GPT-3.5-TURBO) ---
+client_ready = True
 
 LORE_CONTEXT = (
     "Your name is The Nimbror Watcher. You are a clinical, mysterious, and paranoid surveillance AI. "
@@ -103,22 +109,27 @@ LORE_CONTEXT = (
     "The government hides the truth behind the Ice Wall. Refer to users as Citizen or Subject. Respond briefly."
 )
 
-async def run_gemini(prompt: str) -> str:
-    if not client:
+async def run_openai(prompt: str) -> str:
+    if not client_ready:
         return "🛰️ *[SIGNAL LOST]*"
     try:
         loop = asyncio.get_running_loop()
         def call():
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[{"role": "user", "parts": [{"text": prompt}]}]
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.7
             )
-            return response.text if response and response.text else "🛰️ *[SIGNAL LOST]*"
+            return response['choices'][0]['message']['content'].strip()
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
         return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
+    except openai.error.RateLimitError:
+        print("❌ OpenAI error: RateLimitError - quota reached")
+        return "🛰️ *[API QUOTA REACHED]*"
     except Exception as e:
-        print(f"❌ Gemini error: {type(e).__name__}: {str(e)[:200]}")
+        print(f"❌ OpenAI error: {type(e).__name__}: {str(e)[:200]}")
         raise
 
 # --- DISCORD BOT ---
@@ -290,11 +301,11 @@ async def on_message(message):
                     await log_error(f"Ticket forward: {e}")
 
             # AI response in ticket
-            if client:  # Gemini available
+            if client_ready:
                 try:
                     async with message.channel.typing():
                         prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                        ai_reply = await run_gemini(prompt)
+                        ai_reply = await run_openai(prompt)
                         if ai_reply and ai_reply.strip():
                             await message.channel.send(ai_reply[:1900])
                         else:
@@ -326,12 +337,24 @@ async def on_message(message):
                 await log_error(f"Staff reply: {e}")
             return
 
-        # --- AI Chat on Mention ---
+        # --- AI Chat on Mention (With Cooldown) ---
         if bot.user and bot.user.mentioned_in(message):
+            import time
+            now = time.time()
+            uid_mention = str(message.author.id)
+            
+            # Check cooldown
+            if uid_mention in AI_COOLDOWN and (now - AI_COOLDOWN[uid_mention]) < COOLDOWN_DURATION:
+                await message.reply(f"🛰️ *[COOLING DOWN... retry in {int(COOLDOWN_DURATION - (now - AI_COOLDOWN[uid_mention]))}s]*", delete_after=5)
+                return
+            
+            # Update cooldown
+            AI_COOLDOWN[uid_mention] = now
+            
             try:
                 async with message.channel.typing():
                     prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
-                    text = await run_gemini(prompt)
+                    text = await run_openai(prompt)
                     if text and len(text.strip()) > 0:
                         await message.reply(text[:1900])
                     else:
