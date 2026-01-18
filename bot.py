@@ -1,6 +1,6 @@
 import discord
-from discord import app_commands
-from discord.ui import View, Button, Modal, TextInput, Select, TextInputStyle
+from discord import app_commands, TextInputStyle
+from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import tasks, commands
 import requests
 import os
