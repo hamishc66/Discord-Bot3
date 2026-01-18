@@ -112,13 +112,11 @@ async def run_gemini(prompt: str) -> str:
             try:
                 response = client.models.generate_content(
                     model="gemini-1.5-pro",
-                    contents=[
-                        {"role": "user", "parts": [{"text": prompt}]}
-                    ]
+                    contents=[{"role": "user", "parts": [{"text": prompt}]}]
                 )
                 return response.text if response and response.text else "🛰️ *[SIGNAL LOST]*"
-            except Exception as inner_e:
-                print(f"❌ Gemini API error: {type(inner_e).__name__}: {str(inner_e)[:100]}")
+            except Exception as e:
+                print(f"❌ Gemini API error: {type(e).__name__}: {str(e)[:100]}")
                 return "🛰️ *[SIGNAL LOST]*"
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
@@ -282,8 +280,9 @@ async def on_message(message):
                 await log_error(f"Interview: {e}")
             return
 
-        # --- Ticket Forwarding ---
+        # --- Ticket / DM AI Support ---
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("tickets", {}):
+            # Forward to staff
             if STAFF_CHANNEL_ID:
                 try:
                     staff_chan = bot.get_channel(STAFF_CHANNEL_ID)
@@ -292,7 +291,20 @@ async def on_message(message):
                 except discord.Forbidden:
                     pass
                 except Exception as e:
-                    await log_error(f"Ticket: {e}")
+                    await log_error(f"Ticket forward: {e}")
+
+            # AI response in ticket
+            if client:  # Gemini available
+                try:
+                    async with message.channel.typing():
+                        prompt = f"{LORE_CONTEXT}\nUser says: {message.content[:500]}"
+                        ai_reply = await run_gemini(prompt)
+                        if ai_reply and ai_reply.strip():
+                            await message.channel.send(ai_reply[:1900])
+                        else:
+                            await message.channel.send("🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*")
+                except Exception as e:
+                    await log_error(f"Ticket AI: {e}")
             return
 
         # --- Staff Reply (>UserID Message) ---
