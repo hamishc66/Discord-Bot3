@@ -1,7 +1,6 @@
 import discord
 from discord import app_commands
-import openai
-from openai import RateLimitError, APIError
+import requests
 import os
 import random
 import json
@@ -16,7 +15,7 @@ load_dotenv()
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("DISCORD_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+AI_API_KEY = os.getenv("AI_API_KEY")
 STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
@@ -24,18 +23,18 @@ ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
     exit(1)
-if not OPENAI_KEY:
-    print("❌ OPENAI_API_KEY not set")
+if not AI_API_KEY:
+    print("❌ AI_API_KEY not set")
     exit(1)
 
-# Set OpenAI API key
-openai.api_key = OPENAI_KEY
+# Set Hugging Face API key
+openai_api_key = AI_API_KEY
 
-# Initialize OpenAI client for v1.0.0+
+# Initialize Hugging Face client
 try:
-    client = openai.OpenAI(api_key=OPENAI_KEY)
+    client = None  # Using requests directly
 except Exception as e:
-    print(f"⚠️  OpenAI client init failed: {e}")
+    print(f"⚠️  AI client init failed: {e}")
     client = None
 def to_int(val):
     try:
@@ -121,24 +120,32 @@ async def run_openai(prompt: str) -> str:
     try:
         loop = asyncio.get_running_loop()
         def call():
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.7
-            )
-            return response.choices[0].message.content.strip()
+            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+            api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_length": 200,
+                    "temperature": 0.7
+                }
+            }
+            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                return result[0].get('generated_text', '🛰️ *[SIGNAL LOST]*').strip()
+            return "🛰️ *[SIGNAL LOST]*"
         return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=30)
     except asyncio.TimeoutError:
         return "🛰️ *[SIGNAL LOST BEYOND THE ICE WALL]*"
-    except RateLimitError:
-        print("❌ OpenAI error: RateLimitError - quota reached")
-        return "🛰️ *[API QUOTA REACHED]*"
-    except APIError as e:
-        print(f"❌ OpenAI error: {type(e).__name__}: {str(e)[:200]}")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            print("❌ AI error: RateLimitError - quota reached")
+            return "🛰️ *[API QUOTA REACHED]*"
+        print(f"❌ AI error: HTTP {e.response.status_code}")
         raise
     except Exception as e:
-        print(f"❌ OpenAI error: {type(e).__name__}: {str(e)[:200]}")
+        print(f"❌ AI error: {type(e).__name__}: {str(e)[:200]}")
         raise
 
 # --- DISCORD BOT ---
