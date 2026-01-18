@@ -49,6 +49,7 @@ LORE_PROMPT = """You are 'The Nimbror Watcher'. Clinical, mysterious, paranoid.
 - The government hides the truth behind the Ice Wall."""
 
 genai.configure(api_key=GEMINI_KEY)
+# Using 'gemini-1.5-flash' which is the current stable standard
 model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=LORE_PROMPT)
 
 class MyBot(discord.Client):
@@ -62,17 +63,19 @@ class MyBot(discord.Client):
         self.db = load_data()
 
     async def setup_hook(self):
+        # --- FORCE SYNC LOGIC ---
+        print("🛰️ Syncing protocols with Nimbror Island...")
         await self.tree.sync()
+        print("👁️ Watcher brain active and synced.")
 
 bot = MyBot()
 
 # --- HELPER: EMBEDS ---
 def create_embed(title, description, color=0x00ffff):
     embed = discord.Embed(title=title, description=description, color=color)
-    embed.set_footer(text="NIMBROR WATCHER v6.0 • SENSOR-NET")
+    embed.set_footer(text="NIMBROR WATCHER v6.1 • SENSOR-NET")
     return embed
 
-# --- ERROR LOGGING SYSTEM ---
 async def log_error(error_msg):
     channel = bot.get_channel(ERROR_LOG_ID)
     if channel:
@@ -83,10 +86,7 @@ async def log_error(error_msg):
 
 @bot.tree.command(name="help", description="List all Watcher commands")
 async def help_cmd(interaction: discord.Interaction):
-    cmds = (
-        "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n"
-        "🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
-    )
+    cmds = "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
     await interaction.response.send_message(embed=create_embed("📜 DIRECTORY", cmds))
 
 @bot.tree.command(name="intel", description="Classified info")
@@ -122,12 +122,6 @@ async def debug(interaction: discord.Interaction):
 # --- EVENTS ---
 
 @bot.event
-async def on_member_join(member):
-    bot.db["interviews"][str(member.id)] = {"step": 1}
-    save_data(bot.db)
-    await member.send(embed=create_embed("👁️ SCREENING", "Question 1: Why have you sought refuge on Nimbror?"))
-
-@bot.event
 async def on_message(message):
     if message.author.bot: return
     uid = str(message.author.id)
@@ -141,7 +135,7 @@ async def on_message(message):
                 await message.author.send(embed=create_embed("👁️ SCREENING", "Question 2: Who is Jessica's father?"))
             elif state["step"] == 2:
                 if any(x in message.content.lower() for x in ["jeffo", "jeffrey"]):
-                    guild = bot.guilds[0]
+                    guild = message.author.mutual_guilds[0]
                     member = guild.get_member(message.author.id)
                     role = guild.get_role(VERIFIED_ROLE_ID)
                     if role and member: await member.add_roles(role)
@@ -155,7 +149,7 @@ async def on_message(message):
         # 2. Ticket Forwarding
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db["tickets"]:
             staff_chan = bot.get_channel(STAFF_CHANNEL_ID)
-            await staff_chan.send(embed=create_embed(f"📩 LEAK: {message.author}", message.content))
+            if staff_chan: await staff_chan.send(embed=create_embed(f"📩 LEAK: {message.author}", message.content))
 
         # 3. Staff Reply Forwarding
         elif message.channel.id == STAFF_CHANNEL_ID and message.content.startswith(">"):
@@ -164,11 +158,15 @@ async def on_message(message):
             await target.send(embed=create_embed("📡 HIGH COMMAND", parts[1], color=0xff0000))
             await message.add_reaction("🛰️")
 
-        # 4. AI Chat
+        # 4. AI Chat via Mention
         if bot.user.mentioned_in(message):
-            if uid not in bot.chat_sessions: bot.chat_sessions[uid] = model.start_chat()
-            res = bot.chat_sessions[uid].send_message(message.content)
-            await message.reply(res.text)
+            # Start a session if it doesn't exist
+            if uid not in bot.chat_sessions:
+                bot.chat_sessions[uid] = model.start_chat(history=[])
+            
+            # Use await for the response in case of lag
+            response = bot.chat_sessions[uid].send_message(message.content)
+            await message.reply(response.text)
             
     except Exception:
         await log_error(traceback.format_exc())
