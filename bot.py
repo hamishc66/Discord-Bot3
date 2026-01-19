@@ -122,7 +122,6 @@ def load_data():
                 "trials": row.get("trials", {}),
                 "tasks": row.get("tasks", {}),
                 "infraction_log": row.get("infraction_log", {}),
-                "credit_log": row.get("credit_log", []),
                 "announcement_log": row.get("announcement_log", [])
             }
         else:
@@ -140,7 +139,6 @@ def load_data():
                 "trials": {},
                 "tasks": {},
                 "infraction_log": {},
-                "credit_log": [],
                 "announcement_log": []
             }
             supabase.table("bot_state").insert(initial_data).execute()
@@ -195,7 +193,6 @@ def save_data(data):
             "trials": data.get("trials", {}),
             "tasks": data.get("tasks", {}),
             "infraction_log": data.get("infraction_log", {}),
-            "credit_log": data.get("credit_log", []),
             "announcement_log": data.get("announcement_log", [])
         }
         
@@ -2442,7 +2439,6 @@ async def on_message(message):
 
         # --- AI on mention ---
         if bot.user and bot.user.mentioned_in(message):
-            import time
             now = time.time()
             uid_mention = str(message.author.id)
             if uid_mention in AI_COOLDOWN and (now - AI_COOLDOWN[uid_mention]) < COOLDOWN_DURATION:
@@ -2457,25 +2453,39 @@ async def on_message(message):
                 embed = create_embed("⏳ COOLDOWN", f"`[{bar}]` {remaining}s remaining")
                 await message.reply(embed=embed, delete_after=5)
                 return
+            
             AI_COOLDOWN[uid_mention] = now
-            async with message.channel.typing():
-                # Use CONCISE mode for pings - strict constraints (max 120 tokens, plain text only)
-                ai_response = await run_huggingface_concise(
-                    f"User (in a Discord server called Nimbror) says: {message.content[:200]}"
-                )
-                
-                # Hard clamp response length to prevent rambling
-                ai_response = clamp_response(ai_response, max_chars=500)
-                
-                # Store memory and give engagement bonus
-                add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
-                update_social_credit(uid_mention, 1)
-                
-                # Send as plain reply (feels more like conversation, less formal than embeds)
-                await message.reply(ai_response)
+            
+            try:
+                async with message.channel.typing():
+                    # Use CONCISE mode for pings - strict constraints (max 120 tokens, plain text only)
+                    ai_response = await run_huggingface_concise(
+                        f"User (in a Discord server called Nimbror) says: {message.content[:200]}"
+                    )
+                    
+                    # Hard clamp response length to prevent rambling
+                    ai_response = clamp_response(ai_response, max_chars=500)
+                    
+                    # Store memory and give engagement bonus (use old system for now)
+                    add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
+                    update_social_credit(uid_mention, 1)
+                    
+                    # Send as plain reply (feels more like conversation, less formal than embeds)
+                    await message.reply(ai_response)
+            except Exception as ping_error:
+                await log_error(f"Ping reply failed: {type(ping_error).__name__}: {str(ping_error)}")
+                # Send fallback response
+                try:
+                    await message.reply("👁️ *I am watching...*")
+                except:
+                    pass
+            return
 
     except Exception as e:
-        await log_error(f"on_message: {type(e).__name__}: {str(e)[:200]}")
+        error_msg = f"on_message error: {type(e).__name__}: {str(e)}"
+        print(f"❌ {error_msg}")
+        traceback.print_exc()
+        await log_error(error_msg)
     
     # CRITICAL: Allow slash commands to process
     await bot.process_commands(message)
