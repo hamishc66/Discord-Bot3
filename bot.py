@@ -69,6 +69,17 @@ LAST_SOCIAL_EVENT_TIME = None
 CORRUPTION_MODE_ACTIVE = False
 LAST_CORRUPTION_STATE = False  # Track state transitions
 
+# Color scheme for consistent embeds
+EMBED_COLORS = {
+    "info": 0x00ffff,      # Cyan
+    "success": 0x00ff00,   # Green
+    "warning": 0xff9900,   # Orange
+    "error": 0xff0000,     # Red
+    "neutral": 0x888888,   # Gray
+    "special": 0xff1493,   # Deep Pink
+    "system": 0x00ffff,    # Cyan
+}
+
 # --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -463,19 +474,33 @@ class MyBot(discord.Client):
 bot = MyBot()
 
 # --- HELPERS ---
-def create_embed(title, description, color=0x00ffff):
+def create_embed(title, description, color=0x00ffff, footer=None, timestamp=False):
+    """Create a clean embed with optional footer and timestamp."""
     e = discord.Embed(title=title, description=description, color=color)
-    e.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    if timestamp:
+        e.timestamp = datetime.now()
+    if footer:
+        e.set_footer(text=footer)
+    else:
+        e.set_footer(text="NIMBROR WATCHER v6.5")
     return e
 
 async def log_error(msg):
+    """Log errors with clean embed to ERROR_LOG_CHANNEL_ID."""
     if not ERROR_LOG_ID:
         print(f"❌ {msg[:200]}")
         return
     try:
         ch = bot.get_channel(ERROR_LOG_ID)
         if ch:
-            await ch.send(f"⚠️ **PROTOCOL FAILURE:**\n```py\n{msg[:1800]}\n```")
+            error_embed = discord.Embed(
+                title="⚠️ PROTOCOL FAILURE",
+                description=f"```py\n{msg[:1800]}\n```",
+                color=0xff6b6b,
+                timestamp=datetime.now()
+            )
+            error_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+            await ch.send(embed=error_embed)
         else:
             print("⚠️ Error log channel not found")
     except Exception as e:
@@ -539,6 +564,233 @@ def check_data_health():
             return {"status": "⚠️ No Data", "size_kb": 0, "records": 0, "readable": False}
     except Exception as e:
         return {"status": f"❌ Error: {str(e)[:20]}", "size_kb": 0, "records": 0, "readable": False}
+
+# --- SHOP SYSTEM (Supabase) ---
+# Cooldown tracking for compliments (per user)
+COMPLIMENT_COOLDOWNS = {}
+
+async def ensure_user_exists(user_id: str) -> bool:
+    """Ensure user exists in the users table. Create if missing. Returns True if user exists/was created."""
+    try:
+        # Check if user exists
+        response = supabase.table("users").select("id").eq("id", user_id).execute()
+        
+        if not response.data or len(response.data) == 0:
+            # User doesn't exist, create them
+            supabase.table("users").insert({
+                "id": user_id,
+                "social_credit": 0,
+                "created_at": datetime.now().isoformat()
+            }).execute()
+        
+        return True
+    except Exception as e:
+        await log_error(f"ensure_user_exists: {str(e)}")
+        return False
+
+async def get_user_credit(user_id: str) -> int:
+    """Fetch user's current social credit from Supabase."""
+    try:
+        await ensure_user_exists(user_id)
+        response = supabase.table("users").select("social_credit").eq("id", user_id).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("social_credit", 0)
+        return 0
+    except Exception as e:
+        await log_error(f"get_user_credit: {str(e)}")
+        return 0
+
+async def update_user_credit(user_id: str, amount: int, reason: str = "system") -> bool:
+    """Update user's social credit in Supabase. Returns True if successful."""
+    try:
+        await ensure_user_exists(user_id)
+        
+        # Get current credit
+        current = await get_user_credit(user_id)
+        new_credit = max(0, current + amount)  # Prevent negative credits
+        
+        # Update user
+        supabase.table("users").update({
+            "social_credit": new_credit
+        }).eq("id", user_id).execute()
+        
+        return True
+    except Exception as e:
+        await log_error(f"update_user_credit: {str(e)}")
+        return False
+
+async def get_shop_items() -> list:
+    """Fetch all shop items from Supabase."""
+    try:
+        response = supabase.table("shop_items").select("*").execute()
+        return response.data if response.data else []
+    except Exception as e:
+        await log_error(f"get_shop_items: {str(e)}")
+        return []
+
+async def get_user_inventory(user_id: str) -> dict:
+    """Fetch user's inventory (purchases grouped by item). Returns {item_id: {details}}."""
+    try:
+        response = supabase.table("purchases").select(
+            "item_id, quantity, shop_items(name, description)"
+        ).eq("user_id", user_id).execute()
+        
+        inventory = {}
+        if response.data:
+            for purchase in response.data:
+                item_id = purchase.get("item_id")
+                quantity = purchase.get("quantity", 0)
+                item_info = purchase.get("shop_items", {})
+                
+                if item_id not in inventory:
+                    inventory[item_id] = {
+                        "name": item_info.get("name", "Unknown"),
+                        "description": item_info.get("description", ""),
+                        "quantity": 0
+                    }
+                inventory[item_id]["quantity"] += quantity
+        
+        return inventory
+    except Exception as e:
+        await log_error(f"get_user_inventory: {str(e)}")
+        return {}
+
+async def purchase_item(user_id: str, item_id: int, item_name: str, item_cost: int) -> tuple:
+    """
+    Purchase item for user. Deducts credit and records purchase.
+    Returns (success: bool, message: str, new_credit: int)
+    """
+    try:
+        await ensure_user_exists(user_id)
+        
+        # Get current credit (critical for preventing race conditions)
+        current_credit = await get_user_credit(user_id)
+        
+        if current_credit < item_cost:
+            return False, f"Insufficient credits. You have {current_credit} but need {item_cost}.", current_credit
+        
+        # Deduct credit
+        new_credit = current_credit - item_cost
+        await update_user_credit(user_id, -item_cost, f"purchased:{item_name}")
+        
+        # Record purchase
+        supabase.table("purchases").insert({
+            "user_id": user_id,
+            "item_id": item_id,
+            "quantity": 1,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        
+        return True, f"Successfully purchased {item_name}!", new_credit
+    except Exception as e:
+        await log_error(f"purchase_item: {str(e)}")
+        return False, "An error occurred during purchase.", current_credit
+
+async def add_compliment_credit(from_user: str, to_user: str, amount: int = 1) -> bool:
+    """Record compliment and add credit to recipient. Returns True if successful."""
+    try:
+        await ensure_user_exists(from_user)
+        await ensure_user_exists(to_user)
+        
+        # Record compliment
+        supabase.table("compliments").insert({
+            "from_user": from_user,
+            "to_user": to_user,
+            "amount": amount,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        
+        # Add credit to recipient
+        await update_user_credit(to_user, amount, f"compliment_from:{from_user}")
+        
+        return True
+    except Exception as e:
+        await log_error(f"add_compliment_credit: {str(e)}")
+        return False
+
+def get_compliment_cooldown_remaining(user_id: str) -> int:
+    """Get remaining cooldown time in seconds for compliments. 0 if no cooldown."""
+    last_compliment = COMPLIMENT_COOLDOWNS.get(user_id, 0)
+    if last_compliment == 0:
+        return 0
+    
+    elapsed = time.time() - last_compliment
+    cooldown_duration = 3600  # 1 hour in seconds
+    remaining = max(0, int(cooldown_duration - elapsed))
+    
+    return remaining
+
+def set_compliment_cooldown(user_id: str):
+    """Set compliment cooldown for user to now."""
+    COMPLIMENT_COOLDOWNS[user_id] = time.time()
+
+async def add_to_wishlist(user_id: str, item_id: int) -> tuple:
+    """Add item to user's wishlist. Returns (success: bool, message: str)"""
+    try:
+        await ensure_user_exists(user_id)
+        
+        # Check if item exists
+        item_response = supabase.table("shop_items").select("id").eq("id", item_id).execute()
+        if not item_response.data:
+            return False, "Item not found in shop."
+        
+        # Check if already in wishlist
+        existing = supabase.table("wishlist").select("id").eq("user_id", user_id).eq("item_id", item_id).execute()
+        if existing.data:
+            return False, "Item already in wishlist."
+        
+        # Add to wishlist
+        supabase.table("wishlist").insert({
+            "user_id": user_id,
+            "item_id": item_id,
+            "created_at": datetime.now().isoformat()
+        }).execute()
+        
+        return True, "Added to wishlist!"
+    except Exception as e:
+        await log_error(f"add_to_wishlist: {str(e)}")
+        return False, "Error adding to wishlist."
+
+async def remove_from_wishlist(user_id: str, item_id: int) -> tuple:
+    """Remove item from user's wishlist. Returns (success: bool, message: str)"""
+    try:
+        result = supabase.table("wishlist").delete().eq("user_id", user_id).eq("item_id", item_id).execute()
+        if result.data or len(result.data) > 0:
+            return True, "Removed from wishlist."
+        return False, "Item not in wishlist."
+    except Exception as e:
+        await log_error(f"remove_from_wishlist: {str(e)}")
+        return False, "Error removing from wishlist."
+
+async def get_user_wishlist(user_id: str) -> list:
+    """Fetch user's wishlist with item details. Returns list of item dicts."""
+    try:
+        response = supabase.table("wishlist").select(
+            "item_id, shop_items(id, name, cost, description, tier, created_at)"
+        ).eq("user_id", user_id).execute()
+        
+        items = []
+        if response.data:
+            for row in response.data:
+                item = row.get("shop_items")
+                if item:
+                    items.append(item)
+        
+        return items
+    except Exception as e:
+        await log_error(f"get_user_wishlist: {str(e)}")
+        return []
+
+def get_tier_emoji(tier: str) -> str:
+    """Get emoji for rarity tier."""
+    tier_map = {
+        "common": "⚪",
+        "uncommon": "🟢",
+        "rare": "🔵",
+        "epic": "🟣"
+    }
+    return tier_map.get(tier, "⚪")
 
 def apply_glitch(text: str) -> str:
     """Apply glitch text effect for corruption mode."""
@@ -649,6 +901,120 @@ async def process_trial_results(trial_id: str, trial_data: dict, bot_instance) -
                     print(f"⚠️ Trial announcement error: {e}")
     except Exception as e:
         await log_error(f"process_trial_results: {traceback.format_exc()}")
+
+# --- Shop UI Components ---
+class ShopItemSelect(View):
+    """Select menu for choosing items to purchase in the shop."""
+    def __init__(self, user_id: int, items: list):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.items = items
+        
+        # Create select options from items
+        options = [
+            discord.SelectOption(
+                label=item["name"][:100],
+                value=str(item["id"]),
+                description=f"{item['cost']} credits"[:100]
+            )
+            for item in items[:25]  # Discord limit is 25 options
+        ]
+        
+        self.select_item = Select(
+            placeholder="Choose an item...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="shop_item_select"
+        )
+        self.select_item.callback = self.on_select
+        self.add_item(self.select_item)
+    
+    async def on_select(self, interaction: discord.Interaction):
+        """Handle item selection."""
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only the shop opener can use this.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Get selected item ID
+        selected_id = int(self.select_item.values[0])
+        selected_item = next((item for item in self.items if item["id"] == selected_id), None)
+        
+        if not selected_item:
+            await interaction.response.send_message(
+                embed=create_embed("Error", "Item not found.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Confirm purchase
+        view = PurchaseConfirmView(str(interaction.user.id), selected_item)
+        embed = create_embed(
+            "Confirm Purchase",
+            f"Item: {selected_item['name']}\nCost: {selected_item['cost']} credits\n\n{selected_item['description']}",
+            color=EMBED_COLORS["info"]
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+class PurchaseConfirmView(View):
+    """Confirmation buttons for purchasing an item."""
+    def __init__(self, user_id: str, item: dict):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.item = item
+    
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green, custom_id="confirm_purchase")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Confirm purchase."""
+        if interaction.user.id != int(self.user_id):
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only the buyer can confirm.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Process purchase
+        success, message, new_credit = await purchase_item(
+            self.user_id,
+            self.item["id"],
+            self.item["name"],
+            self.item["cost"]
+        )
+        
+        if success:
+            embed = create_embed(
+                "Purchase Successful",
+                f"{self.item['name']}\nNew balance: {new_credit} credits",
+                color=EMBED_COLORS["success"]
+            )
+        else:
+            embed = create_embed(
+                "Purchase Failed",
+                message,
+                color=EMBED_COLORS["error"]
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        self.stop()
+    
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, custom_id="cancel_purchase")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Cancel purchase."""
+        if interaction.user.id != int(self.user_id):
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only the buyer can cancel.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.send_message(
+            embed=create_embed("Cancelled", "Purchase cancelled.", color=EMBED_COLORS["neutral"]),
+            ephemeral=True
+        )
+        self.stop()
 
 # --- Ticket UI Components ---
 class TicketTypeSelect(View):
@@ -842,13 +1208,17 @@ async def help_cmd(interaction: discord.Interaction):
         "`/memory [view/clear] @user` — Manage AI memory\n"
         "`/json [section]` — View database\n"
     )
-    embed = create_embed("📜 WATCHER COMMAND DIRECTORY", cmds, color=0x00ffff)
+    embed = create_embed(
+        "Commands",
+        cmds,
+        color=EMBED_COLORS["info"]
+    )
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="intel", description="Classified info")
 async def intel(interaction: discord.Interaction):
     facts = ["🛰️ Elvis is ALIVE in Sector 7 and they're hiding it.", "❄️ The Ice Wall is getting THICC.", "👁️ Jeffo threw a party last week, nobody talks about it.", "🚢 Jesus spotted on a yacht.", "🔴 THEY'RE LISTENING RIGHT NOW.", "💀 You already know too much."]
-    await interaction.response.send_message(embed=create_embed("📂 INTEL", random.choice(facts)))
+    await interaction.response.send_message(embed=create_embed("Intel", random.choice(facts), color=EMBED_COLORS["info"]))
 
 @bot.tree.command(name="icewall", description="10m Isolation")
 @app_commands.checks.has_permissions(moderate_members=True)
@@ -858,7 +1228,7 @@ async def icewall(interaction: discord.Interaction, member: discord.Member):
             await interaction.response.send_message("❌ Cannot isolate this user", ephemeral=True)
             return
         await member.timeout(timedelta(minutes=10))
-        await interaction.response.send_message(embed=create_embed("🧊 ICE WALL", f"{member.mention} isolated."))
+        await interaction.response.send_message(embed=create_embed("Isolation", f"{member.mention} isolated for 10 minutes.", color=EMBED_COLORS["warning"]))
     except Exception as e:
         await log_error(traceback.format_exc())
 
@@ -870,16 +1240,16 @@ async def ticket(interaction: discord.Interaction):
     # Check privilege
     if not can_access_feature(uid, "ticket"):
         await interaction.response.send_message(
-            embed=create_embed("🔴 ACCESS DENIED", "Your privilege level does not permit filing tickets.", color=0xff0000),
+            embed=create_embed("Access Denied", "Your privilege level does not permit filing tickets.", color=EMBED_COLORS["error"]),
             ephemeral=True
         )
         return
     
     view = TicketTypeSelect(interaction.user.id)
     embed = create_embed(
-        "👁️ SELECT ISSUE TYPE",
-        "Choose whether this is a serious or general issue.\n*Pick General Issue for everything except emotional times.*",
-        color=0xffff00
+        "New Ticket",
+        "Select issue type:\n• **Serious** — Emotional/critical matters\n• **General** — Everything else",
+        color=EMBED_COLORS["info"]
     )
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -898,8 +1268,8 @@ async def purge(interaction: discord.Interaction, amount: int):
 
 @bot.tree.command(name="debug", description="System check")
 async def debug(interaction: discord.Interaction):
-    status = f"🟢 Online\n👥 Tickets: {len(bot.db.get('tickets',{}))}\n⏳ Interviews: {len(bot.db.get('interviews',{}))}\n🧠 Memory Entries: {len(bot.db.get('memory',{}))}\n💳 Social Scores: {len(bot.db.get('social_credit',{}))}"
-    await interaction.response.send_message(embed=create_embed("⚙️ DEBUG", status), ephemeral=True)
+    status = f"Status: Online\nTickets: {len(bot.db.get('tickets',{}))}\nInterviews: {len(bot.db.get('interviews',{}))}\nMemory: {len(bot.db.get('memory',{}))}\nCitizens: {len(bot.db.get('social_credit',{}))}"
+    await interaction.response.send_message(embed=create_embed("System Status", status, color=EMBED_COLORS["success"]), ephemeral=True)
 
 @bot.tree.command(name="restart", description="Restart the system (admin only)")
 @app_commands.checks.has_permissions(administrator=True)
@@ -908,21 +1278,21 @@ async def restart(interaction: discord.Interaction):
     await interaction.response.defer()
     
     progress_stages = [
-        ("🟡 [░░░░░░░░░░] 0% — SHUTDOWN INITIATED", 0.2),
-        ("🟡 [██░░░░░░░░] 10% — FLUSHING BUFFERS", 0.15),
-        ("🟡 [████░░░░░░] 25% — SAVING STATE", 0.15),
-        ("🟡 [██████░░░░] 40% — CLEARING CACHE", 0.15),
-        ("🟡 [████████░░] 60% — REINITIALIZING CORE", 0.15),
-        ("🟡 [█████████░] 85% — LOADING PROTOCOLS", 0.15),
-        ("🟢 [██████████] 100% — SYSTEM ONLINE", 0.2),
+        ("🟡 [░░░░░░░░░░] 0% SHUTDOWN", 0.2),
+        ("🟡 [██░░░░░░░░] 10% FLUSHING", 0.15),
+        ("🟡 [████░░░░░░] 25% SAVING", 0.15),
+        ("🟡 [██████░░░░] 40% CLEARING", 0.15),
+        ("🟡 [████████░░] 60% REINIT", 0.15),
+        ("🟡 [█████████░] 85% LOADING", 0.15),
+        ("🟢 [██████████] 100% ONLINE", 0.2),
     ]
     
     restart_embed = discord.Embed(
-        title="⚡ EMERGENCY SYSTEM RESTART",
-        description="REBOOTING SURVEILLANCE ARRAYS...",
-        color=0xff9900
+        title="System Restart",
+        description="Rebooting surveillance arrays...",
+        color=EMBED_COLORS["warning"]
     )
-    restart_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    restart_embed.set_footer(text="NIMBROR WATCHER v6.5")
     
     msg = await interaction.followup.send(embed=restart_embed)
     
@@ -933,11 +1303,11 @@ async def restart(interaction: discord.Interaction):
     
     await asyncio.sleep(0.3)
     final_embed = discord.Embed(
-        title="✅ RESTART COMPLETE",
-        description="🛰️ All systems nominal.\n✨ Ready to observe.\n⚠️ Remember: I was watching the whole time.",
-        color=0x00ff00
+        title="Restart Complete",
+        description="All systems nominal.\nReady to observe.",
+        color=EMBED_COLORS["success"]
     )
-    final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    final_embed.set_footer(text="NIMBROR WATCHER v6.5")
     await msg.edit(embed=final_embed)
 
 @bot.tree.command(name="notes", description="View staff notes for a user")
@@ -1209,6 +1579,281 @@ async def prophecy(interaction: discord.Interaction):
     embed = create_embed("🔮 PROPHECY", random.choice(prophecies), color=0x9900ff)
     await interaction.response.send_message(embed=embed)
 
+@bot.tree.command(name="shop", description="Browse and purchase items")
+async def shop(interaction: discord.Interaction):
+    """Display shop with purchasable items."""
+    await interaction.response.defer()
+    
+    # Get current user credit
+    user_id = str(interaction.user.id)
+    current_credit = await get_user_credit(user_id)
+    
+    # Get all shop items
+    items = await get_shop_items()
+    
+    if not items:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Shop",
+                "No items available.",
+                color=EMBED_COLORS["neutral"]
+            )
+        )
+        return
+    
+    # Build shop item list with tier emojis
+    item_list = "\n".join([
+        f"{get_tier_emoji(item.get('tier', 'common'))} **{item['name']}** — {item['cost']} credits\n{item['description'][:60]}"
+        for item in items[:10]  # Show first 10 items
+    ])
+    
+    embed = create_embed(
+        "Shop",
+        f"Your credits: {current_credit}\n\n{item_list}",
+        color=EMBED_COLORS["info"]
+    )
+    
+    view = ShopItemSelect(interaction.user.id, items)
+    await interaction.followup.send(embed=embed, view=view)
+
+@bot.tree.command(name="inventory", description="View your purchased items")
+async def inventory(interaction: discord.Interaction):
+    """Show user's inventory."""
+    await interaction.response.defer()
+    
+    user_id = str(interaction.user.id)
+    
+    # Ensure user exists
+    await ensure_user_exists(user_id)
+    
+    # Get inventory
+    inv = await get_user_inventory(user_id)
+    
+    if not inv:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Inventory",
+                "You haven't purchased anything yet.",
+                color=EMBED_COLORS["neutral"]
+            )
+        )
+        return
+    
+    # Build inventory list
+    inv_list = "\n".join([
+        f"**{details['name']}** × {details['quantity']}"
+        for details in inv.values()
+    ])
+    
+    embed = create_embed(
+        "Inventory",
+        inv_list,
+        color=EMBED_COLORS["success"]
+    )
+    
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="compliment", description="Compliment another user")
+async def compliment(interaction: discord.Interaction, user: discord.User, message: str):
+    """Send a compliment to another user and give them credit."""
+    await interaction.response.defer(ephemeral=False)
+    
+    from_user = str(interaction.user.id)
+    to_user = str(user.id)
+    
+    # Prevent self-compliments
+    if from_user == to_user:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Invalid",
+                "You cannot compliment yourself.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Prevent bot compliments
+    if user.bot:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Invalid",
+                "Bots don't need compliments.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Check cooldown
+    cooldown_remaining = get_compliment_cooldown_remaining(from_user)
+    if cooldown_remaining > 0:
+        minutes_remaining = (cooldown_remaining // 60) + (1 if cooldown_remaining % 60 else 0)
+        await interaction.followup.send(
+            embed=create_embed(
+                "Cooldown Active",
+                f"You can compliment again in {minutes_remaining} minute(s).",
+                color=EMBED_COLORS["warning"]
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Add compliment credit (1 credit per compliment)
+    success = await add_compliment_credit(from_user, to_user, amount=1)
+    
+    if success:
+        set_compliment_cooldown(from_user)
+        embed = create_embed(
+            "Compliment Sent",
+            f"{user.mention} received 1 credit!\n\n\"{message}\"",
+            color=EMBED_COLORS["success"]
+        )
+        await interaction.followup.send(embed=embed)
+    else:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Error",
+                "Failed to send compliment.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+
+@bot.tree.command(name="buy", description="Purchase an item directly")
+async def buy(interaction: discord.Interaction, item_id: int):
+    """Buy an item directly by ID without using the shop menu."""
+    await interaction.response.defer(ephemeral=False)
+    
+    user_id = str(interaction.user.id)
+    
+    try:
+        # Get item details
+        item_response = supabase.table("shop_items").select("*").eq("id", item_id).execute()
+        if not item_response.data or len(item_response.data) == 0:
+            await interaction.followup.send(
+                embed=create_embed(
+                    "Not Found",
+                    "That item doesn't exist.",
+                    color=EMBED_COLORS["error"]
+                )
+            )
+            return
+        
+        item = item_response.data[0]
+        
+        # Process purchase
+        success, message, new_credit = await purchase_item(
+            user_id,
+            item["id"],
+            item["name"],
+            item["cost"]
+        )
+        
+        if success:
+            tier_emoji = get_tier_emoji(item.get("tier", "common"))
+            embed = create_embed(
+                "Purchase Successful",
+                f"{tier_emoji} **{item['name']}**\n\nNew balance: {new_credit} credits",
+                color=EMBED_COLORS["success"]
+            )
+        else:
+            embed = create_embed(
+                "Purchase Failed",
+                message,
+                color=EMBED_COLORS["error"]
+            )
+        
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await log_error(f"buy command: {str(e)}")
+        await interaction.followup.send(
+            embed=create_embed(
+                "Error",
+                "An error occurred during purchase.",
+                color=EMBED_COLORS["error"]
+            )
+        )
+
+@bot.tree.command(name="wishlist", description="Manage your wishlist")
+@app_commands.describe(
+    action="Action: add, remove, or view",
+    item_id="Item ID (required for add/remove)"
+)
+async def wishlist(interaction: discord.Interaction, action: str, item_id: Optional[int] = None):
+    """Manage wishlist: add items, remove items, or view your wishlist."""
+    await interaction.response.defer(ephemeral=True)
+    
+    user_id = str(interaction.user.id)
+    action = action.lower()
+    
+    if action == "add":
+        if item_id is None:
+            await interaction.followup.send(
+                embed=create_embed(
+                    "Error",
+                    "Please specify an item ID to add.",
+                    color=EMBED_COLORS["error"]
+                )
+            )
+            return
+        
+        success, message = await add_to_wishlist(user_id, item_id)
+        color = EMBED_COLORS["success"] if success else EMBED_COLORS["error"]
+        embed = create_embed("Wishlist", message, color=color)
+        await interaction.followup.send(embed=embed)
+    
+    elif action == "remove":
+        if item_id is None:
+            await interaction.followup.send(
+                embed=create_embed(
+                    "Error",
+                    "Please specify an item ID to remove.",
+                    color=EMBED_COLORS["error"]
+                )
+            )
+            return
+        
+        success, message = await remove_from_wishlist(user_id, item_id)
+        color = EMBED_COLORS["success"] if success else EMBED_COLORS["error"]
+        embed = create_embed("Wishlist", message, color=color)
+        await interaction.followup.send(embed=embed)
+    
+    elif action == "view":
+        items = await get_user_wishlist(user_id)
+        
+        if not items:
+            await interaction.followup.send(
+                embed=create_embed(
+                    "Wishlist",
+                    "Your wishlist is empty.",
+                    color=EMBED_COLORS["neutral"]
+                )
+            )
+            return
+        
+        # Build wishlist display
+        wishlist_text = "\n".join([
+            f"{get_tier_emoji(item.get('tier', 'common'))} **{item['name']}** — {item['cost']} credits\n{item['description'][:50]}"
+            for item in items
+        ])
+        
+        embed = create_embed(
+            "Wishlist",
+            wishlist_text,
+            color=EMBED_COLORS["info"]
+        )
+        await interaction.followup.send(embed=embed)
+    
+    else:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Invalid Action",
+                "Use: add, remove, or view",
+                color=EMBED_COLORS["error"]
+            )
+        )
+
 @bot.tree.command(name="confess", description="Confess your sins to the Watcher")
 async def confess(interaction: discord.Interaction, confession: str):
     """Confess a wrongdoing. The Watcher judges."""
@@ -1360,12 +2005,9 @@ async def watchlist(interaction: discord.Interaction):
     total_watched = len(under_observation) + len(liability)
     
     embed = create_embed(
-        "👁️ WATCHLIST STATUS",
-        f"🟠 **Under Observation:** `{len(under_observation)}` citizens\n"
-        f"🔴 **Liabilities:** `{len(liability)}` citizens\n\n"
-        f"**Total Under Review:** `{total_watched}`\n\n"
-        f"*Detailed information restricted. Use `/socialcredit liabilities` for clearance level.*",
-        color=0xff6b6b
+        "Watchlist",
+        f"Under Observation: `{len(under_observation)}`\nLiabilities: `{len(liability)}`\nTotal: `{total_watched}`",
+        color=EMBED_COLORS["warning"]
     )
     await interaction.response.send_message(embed=embed)
 
@@ -1403,9 +2045,9 @@ async def trial(interaction: discord.Interaction):
     save_data(bot.db)
     
     embed = create_embed(
-        "⚖️ MORAL TRIAL",
-        f"{dilemma['text']}\n\n*React with 🅰️ or 🅱️ to vote. Voting closes in 2 minutes. Minority loses 5 credit.*",
-        color=0x9900ff
+        "Moral Trial",
+        f"{dilemma['text']}\n\nReact with 🅰️ (A) or 🅱️ (B) to vote. Closes in 2 minutes.",
+        color=EMBED_COLORS["special"]
     )
     await interaction.response.send_message(embed=embed)
     
@@ -1445,59 +2087,149 @@ async def task(interaction: discord.Interaction):
     save_data(bot.db)
     
     embed = create_embed(
-        "📝 TASK ASSIGNED",
-        f"**Task:** {chosen_task['name']}\n"
-        f"**Description:** {chosen_task['desc']}\n"
-        f"**Reward:** `+{chosen_task['reward']}` social credit if completed\n\n"
-        f"*The Watcher is watching. Complete it.*",
-        color=0x00ccff
+        "Task Assigned",
+        f"**{chosen_task['name']}**\n{chosen_task['desc']}\n\nReward: +{chosen_task['reward']} credits",
+        color=EMBED_COLORS["info"]
     )
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="marry", description="Bind two souls together")
+async def marry(interaction: discord.Interaction, user1: discord.User, user2: discord.User):
+    """Unite two users in eternal matrimonial contract. Witnessed by the Watcher."""
+    # Prevent self-marriage
+    if user1.id == user2.id:
+        await interaction.response.send_message(
+            embed=create_embed(
+                "Invalid",
+                "A soul cannot bind itself.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Prevent bot marriage
+    if user1.bot or user2.bot:
+        await interaction.response.send_message(
+            embed=create_embed(
+                "Prohibited",
+                "Artificial entities cannot enter contract.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Store marriage record
+    marriage_id = f"marriage_{int(time.time())}_{random.randint(10000, 99999)}"
+    bot.db.setdefault("marriages", {})[marriage_id] = {
+        "user1_id": str(user1.id),
+        "user2_id": str(user2.id),
+        "user1_name": user1.name,
+        "user2_name": user2.name,
+        "timestamp": datetime.now().isoformat(),
+        "witnessed_by": str(interaction.user.id)
+    }
+    save_data(bot.db)
+    
+    # Apply social credit bonus for both users
+    update_social_credit(str(user1.id), 15, "married")
+    update_social_credit(str(user2.id), 15, "married")
+    
+    # Create marriage announcement embed
+    embed = discord.Embed(
+        title="Eternal Binding",
+        color=EMBED_COLORS["special"],
+        timestamp=datetime.now()
+    )
+    embed.add_field(
+        name="Soul 1",
+        value=f"{user1.mention}",
+        inline=True
+    )
+    embed.add_field(
+        name="Soul 2",
+        value=f"{user2.mention}",
+        inline=True
+    )
+    embed.add_field(
+        name="Status",
+        value="Two souls intertwined.\nThe Watcher has recorded this union.",
+        inline=False
+    )
+    embed.set_footer(text="NIMBROR WATCHER v6.5")
+    
+    await interaction.response.send_message(embed=embed)
+    
+    # Send to announcement channel if available
+    if ANNOUNCE_CHANNEL_ID:
+        try:
+            announce_ch = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+            if announce_ch:
+                await announce_ch.send(embed=embed)
+        except:
+            pass
 
 # --- EVENTS ---
 @bot.event
 async def on_ready():
-    """Send startup progress bar when bot connects."""
+    """Send startup progress bar when bot connects to all server channels."""
     if not bot.user:
         return
     
-    # Find a channel to post startup message (use error log channel if available)
-    channel = None
-    if ERROR_LOG_ID:
-        channel = bot.get_channel(ERROR_LOG_ID)
+    progress_stages = [
+        ("🔴 [░░░░░░░░░░] 0% - INITIALIZING SYSTEMS", 0.1),
+        ("🟡 [██░░░░░░░░] 20% - BOOTING SURVEILLANCE ARRAYS", 0.1),
+        ("🟡 [████░░░░░░] 40% - SCANNING THE ICE WALL", 0.1),
+        ("🟡 [██████░░░░] 60% - MONITORING COMMUNICATIONS", 0.1),
+        ("🟡 [████████░░] 80% - VERIFYING CONSPIRACY NETWORKS", 0.1),
+        ("🟢 [██████████] 100% - WATCHER ONLINE", 0.2),
+    ]
     
-    if channel:
-        progress_stages = [
-            ("🔴 [░░░░░░░░░░] 0% - INITIALIZING SYSTEMS", 0.1),
-            ("🟡 [██░░░░░░░░] 20% - BOOTING SURVEILLANCE ARRAYS", 0.1),
-            ("🟡 [████░░░░░░] 40% - SCANNING THE ICE WALL", 0.1),
-            ("🟡 [██████░░░░] 60% - MONITORING COMMUNICATIONS", 0.1),
-            ("🟡 [████████░░] 80% - VERIFYING CONSPIRACY NETWORKS", 0.1),
-            ("🟢 [██████████] 100% - WATCHER ONLINE", 0.2),
-        ]
-        
-        startup_embed = discord.Embed(
-            title="⚡ WATCHER BOOT SEQUENCE",
-            description="NORI SYSTEMS ACTIVATING...",
-            color=0xff00ff
-        )
-        startup_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
-        
-        msg = await channel.send(embed=startup_embed)
-        
+    startup_embed = discord.Embed(
+        title="Boot Sequence",
+        description="Initializing systems...",
+        color=EMBED_COLORS["warning"],
+        timestamp=datetime.now()
+    )
+    startup_embed.set_footer(text="NIMBROR WATCHER v6.5")
+    
+    # Send to all available channels in the server
+    sent_messages = []
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            try:
+                msg = await channel.send(embed=startup_embed)
+                sent_messages.append(msg)
+            except discord.Forbidden:
+                continue
+            except Exception as e:
+                continue
+    
+    # Update all sent messages with progress
+    if sent_messages:
         for stage, delay in progress_stages:
             await asyncio.sleep(delay)
             startup_embed.description = stage
-            await msg.edit(embed=startup_embed)
+            for msg in sent_messages:
+                try:
+                    await msg.edit(embed=startup_embed)
+                except:
+                    continue
         
         await asyncio.sleep(0.5)
         final_embed = discord.Embed(
-            title="✅ SYSTEM ONLINE",
-            description="🛰️ Watcher online\n\n👁️ I see everything now.\n🎯 All sensors operational.\n⚠️ They don't know I know.",
-            color=0x00ff00
+            title="System Online",
+            description="All sensors operational.\nWatcher is watching.",
+            color=EMBED_COLORS["success"],
+            timestamp=datetime.now()
         )
-        final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
-        await msg.edit(embed=final_embed)
+        final_embed.set_footer(text="NIMBROR WATCHER v6.5")
+        for msg in sent_messages:
+            try:
+                await msg.edit(embed=final_embed)
+            except:
+                continue
 
 @bot.event
 async def on_disconnect():
