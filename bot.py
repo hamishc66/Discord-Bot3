@@ -24,6 +24,7 @@ AI_MODEL = os.getenv("HF_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
 STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
+ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
 
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
@@ -41,6 +42,7 @@ def to_int(val):
 STAFF_CHANNEL_ID = to_int(STAFF_CHANNEL_ID)
 VERIFIED_ROLE_ID = to_int(VERIFIED_ROLE_ID)
 ERROR_LOG_ID = to_int(ERROR_LOG_ID)
+ANNOUNCE_CHANNEL_ID = to_int(ANNOUNCE_CHANNEL_ID)
 
 # AI Cooldown tracking (per user, 10s cooldown)
 AI_COOLDOWN = {}
@@ -48,6 +50,14 @@ COOLDOWN_DURATION = 10
 
 # Daily quest tracking (12 hours cooldown)
 QUEST_COOLDOWN = 43200
+
+# Startup tracking for uptime
+START_TIME = time.time()
+
+# Status tracking
+LAST_SOCIAL_EVENT = None
+LAST_SOCIAL_EVENT_TIME = None
+CORRUPTION_MODE_ACTIVE = False
 
 # --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -88,7 +98,11 @@ def load_data():
         "memory": {},
         "social_credit": {},
         "last_quest_time": 0,
-        "completed_quests": {}
+        "completed_quests": {},
+        "incidents": [],
+        "trials": {},
+        "tasks": {},
+        "infraction_log": {}
     }
 
 def save_data(data):
@@ -158,6 +172,7 @@ class MyBot(discord.Client):
             # Start daily quest task and quest timeout checker
             self.daily_quest_loop.start()
             self.quest_timeout_check.start()
+            self.dynamic_social_credit_events.start()
         except Exception as e:
             print(f"⚠️ Command sync failed: {e}")
 
@@ -248,6 +263,42 @@ class MyBot(discord.Client):
                         continue
         except Exception as e:
             await log_error(f"quest_timeout_check: {traceback.format_exc()}")
+    
+    @tasks.loop(hours=random.randint(24, 48))
+    async def dynamic_social_credit_events(self):
+        """Random server-wide social credit events every 24-48 hours."""
+        try:
+            global LAST_SOCIAL_EVENT, LAST_SOCIAL_EVENT_TIME
+            
+            events = [
+                ("📉 **ECONOMIC CORRECTION** — All citizens −2 social credit", -2),
+                ("📈 **PRODUCTIVITY SPIKE** — Active users +3 social credit", 3),
+                ("⚠️ **SUSPICIOUS SILENCE** — Inactive users −1 social credit", -1),
+                ("🎉 **CELEBRATION** — Everyone +1 social credit", 1),
+                ("🔴 **CRITICAL ALERT** — Compliance failures −5 social credit", -5),
+            ]
+            event_text, modifier = random.choice(events)
+            
+            # Track event
+            LAST_SOCIAL_EVENT = event_text
+            LAST_SOCIAL_EVENT_TIME = datetime.now().isoformat()
+            
+            # Apply modifier to all users
+            for uid in self.db.get("social_credit", {}).keys():
+                self.db["social_credit"][uid] += modifier
+            save_data(self.db)
+            
+            # Announce to channel
+            if ANNOUNCE_CHANNEL_ID:
+                try:
+                    ch = self.get_channel(ANNOUNCE_CHANNEL_ID)
+                    if ch:
+                        embed = create_embed("🌍 GLOBAL EVENT", event_text, color=0xff00ff)
+                        await ch.send(embed=embed)
+                except:
+                    pass
+        except Exception as e:
+            await log_error(f"dynamic_social_credit_events: {traceback.format_exc()}")
 
 bot = MyBot()
 
@@ -283,6 +334,82 @@ def add_memory(user_id: str, interaction_type: str, data: str):
     elif interaction_type == "preference":
         bot.db["memory"][user_id]["preferences"].append(data)
     save_data(bot.db)
+
+def check_data_health():
+    """Check data file integrity and return health status"""
+    try:
+        with open("memory.json", "r") as f:
+            data = json.load(f)
+        size = os.path.getsize("memory.json")
+        record_count = sum([len(data.get("social_credit", {})), len(data.get("memory", {})), len(data.get("tickets", {}))])
+        return {
+            "status": "✅ Healthy",
+            "size_kb": round(size / 1024, 2),
+            "records": record_count,
+            "readable": True
+        }
+    except FileNotFoundError:
+        return {"status": "⚠️ Not Created", "size_kb": 0, "records": 0, "readable": False}
+    except json.JSONDecodeError:
+        return {"status": "🔴 Corrupted", "size_kb": 0, "records": 0, "readable": False}
+    except Exception as e:
+        return {"status": f"❌ Error: {str(e)[:20]}", "size_kb": 0, "records": 0, "readable": False}
+
+def apply_glitch(text: str) -> str:
+    """Apply glitch text effect for corruption mode."""
+    glitch_chars = ["█", "▓", "▒", "░", "?", "~"]
+    result = list(text)
+    for _ in range(random.randint(2, 6)):
+        if result:
+            idx = random.randint(0, len(result) - 1)
+            result[idx] = random.choice(glitch_chars)
+    return "".join(result)
+
+def corrupt_message(text: str) -> str:
+    """Corrupt a message (cut off mid-sentence, glitch, etc)."""
+    effects = [
+        text[:random.randint(len(text)//2, len(text))],  # Cut off
+        apply_glitch(text),  # Glitch
+        text.replace(random.choice(text.split()), "█" * random.randint(3, 8)),  # Redact word
+        text + " " + "".join([random.choice(["█", "▓", "?", "~"]) for _ in range(random.randint(5, 15))]),  # Add noise
+    ]
+    return random.choice(effects)
+
+def get_privilege_level(user_id: str) -> str:
+    """Determine privilege level based on social credit."""
+    score = bot.db.get("social_credit", {}).get(user_id, 0)
+    if score < 0:
+        return "liability"
+    elif score < 30:
+        return "under_observation"
+    elif score < 80:
+        return "compliant"
+    else:
+        return "trusted_asset"
+
+def can_access_feature(user_id: str, feature: str) -> bool:
+    """Check if user can access a feature based on privilege."""
+    privilege = get_privilege_level(user_id)
+    restricted_features = {
+        "liability": ["ticket", "confess", "trial"],
+        "under_observation": ["trial"],
+        "compliant": [],
+        "trusted_asset": []
+    }
+    return feature not in restricted_features.get(privilege, [])
+
+def should_enable_corruption() -> bool:
+    """Check if corruption mode should be active based on server average credit."""
+    global CORRUPTION_MODE_ACTIVE
+    scores = bot.db.get("social_credit", {}).values()
+    if not scores:
+        CORRUPTION_MODE_ACTIVE = False
+        return False
+    
+    average = sum(scores) / len(scores)
+    # Enable corruption if average drops below 10
+    CORRUPTION_MODE_ACTIVE = average < 10
+    return CORRUPTION_MODE_ACTIVE
 
 # --- Ticket UI Components ---
 class TicketTypeSelect(View):
@@ -526,6 +653,423 @@ async def memory(interaction: discord.Interaction, action: str, user: Optional[d
     except Exception as e:
         await log_error(traceback.format_exc())
 
+@bot.tree.command(name="socialcredit", description="View social credit scores, leaderboard, or history")
+async def socialcredit(interaction: discord.Interaction, mode: str = "user", user: Optional[discord.User] = None):
+    """View leaderboard, user score, or infraction history."""
+    scores = bot.db.get("social_credit", {})
+    if not scores:
+        await interaction.response.send_message(
+            embed=create_embed("💳 SOCIAL CREDIT", "No data available yet."),
+            ephemeral=True
+        )
+        return
+
+    if mode == "leaderboard":
+        # Sort by tier first, then by score
+        def sort_key(item):
+            uid, score = item
+            tier, _ = get_citizen_tier(score)
+            tier_order = {"🔴 Liability": 0, "🟠 Under Observation": 1, "🟡 Compliant Citizen": 2, "🟢 Trusted Asset": 3}
+            return (tier_order.get(tier, 0), -score)
+        
+        sorted_users = sorted(scores.items(), key=sort_key, reverse=True)
+        
+        lines = []
+        for i, (uid, score) in enumerate(sorted_users[:15], start=1):
+            member = interaction.guild.get_member(int(uid)) if interaction.guild else None
+            name = member.name if member else f"User {uid}"
+            tier, _ = get_citizen_tier(score)
+            lines.append(f"**#{i}** {tier} — {name}: `{score}`")
+        
+        embed = create_embed("🏆 SOCIAL CREDIT LEADERBOARD (Top 15)", "\n".join(lines), color=0x00ff99)
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    elif mode == "liabilities":
+        # Show only negative score users
+        liability_scores = {uid: score for uid, score in scores.items() if score < 0}
+        if not liability_scores:
+            await interaction.response.send_message(
+                embed=create_embed("🔴 LIABILITIES", "All citizens in compliance."),
+                ephemeral=True
+            )
+            return
+        
+        sorted_liabilities = sorted(liability_scores.items(), key=lambda x: x[1])
+        lines = []
+        for i, (uid, score) in enumerate(sorted_liabilities[:10], start=1):
+            member = interaction.guild.get_member(int(uid)) if interaction.guild else None
+            name = member.name if member else f"User {uid}"
+            lines.append(f"**#{i}** 🔴 {name}: `{score}`")
+        
+        embed = create_embed("🔴 LIABILITY CITIZENS", "\n".join(lines), color=0xff0000)
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    elif mode == "history":
+        if not user:
+            await interaction.response.send_message("❌ Specify a user for history.", ephemeral=True)
+            return
+        
+        uid = str(user.id)
+        infractions = bot.db.get("infraction_log", {}).get(uid, [])
+        
+        if not infractions:
+            await interaction.response.send_message(
+                embed=create_embed(f"📋 HISTORY - {user.name}", "Clean record."),
+                ephemeral=True
+            )
+            return
+        
+        history_text = ""
+        for record in infractions[-10:]:  # Last 10
+            history_text += f"**{record.get('type', '?')}** ({record.get('timestamp', '?')}): {record.get('reason', '?')}\n"
+        
+        embed = create_embed(f"📋 INFRACTION HISTORY - {user.name}", history_text[:2000], color=0xff6b6b)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # Default: user mode
+    target = user or interaction.user
+    uid = str(target.id)
+    score = scores.get(uid, 0)
+    sorted_all = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    rank = next((i + 1 for i, (u, _) in enumerate(sorted_all) if u == uid), "Unranked")
+    tier, color = get_citizen_tier(score)
+    embed = create_embed(
+        "💳 SOCIAL CREDIT REPORT",
+        f"👤 **Citizen:** {target.mention}\n📊 **Score:** `{score}`\n🏷️ **Tier:** {tier}\n🏅 **Rank:** `{rank}`",
+        color=color
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="json", description="View internal system data (admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+async def json_view(interaction: discord.Interaction, section: Optional[str] = None):
+    """Admin-only command to view JSON database sections."""
+    data = bot.db
+    if section:
+        content = json.dumps(data.get(section, {}), indent=2)
+        title = f"📁 JSON VIEW — {section}"
+    else:
+        content = json.dumps(data, indent=2)
+        title = "📦 FULL JSON STATE"
+    if len(content) > 1900:
+        content = content[:1900] + "\n...TRUNCATED..."
+    embed = create_embed(title, f"```json\n{content}\n```", color=0xff4444)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="status", description="System health report")
+async def status(interaction: discord.Interaction):
+    """Show Watcher system status and health."""
+    global LAST_SOCIAL_EVENT, LAST_SOCIAL_EVENT_TIME
+    
+    # Check for corruption mode
+    corruption_active = should_enable_corruption()
+    
+    uptime = int(time.time() - START_TIME)
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
+    
+    # Data health check
+    health = check_data_health()
+    
+    # Event system status
+    if LAST_SOCIAL_EVENT_TIME:
+        event_time = datetime.fromisoformat(LAST_SOCIAL_EVENT_TIME)
+        time_ago = (datetime.now() - event_time).total_seconds() / 3600
+        event_status = f"**Last Event:** {LAST_SOCIAL_EVENT[:40]}... ({time_ago:.1f}h ago)"
+    else:
+        event_status = "**Last Event:** None (pending...)"
+    
+    # Corruption mode display with special formatting
+    if corruption_active:
+        corruption_text = "🔴 CRITICAL - SYSTEM INSTABILITY DETECTED"
+        system_status = "❌ DEGRADED"
+        desc_color = 0xff0000
+    else:
+        corruption_text = "🟢 Normal operations"
+        system_status = "✅ NOMINAL"
+        desc_color = 0x00ffff
+    
+    # Build description - possibly corrupted if corruption is active
+    description = (
+        f"⏱️ **Uptime:** `{hours}h {minutes}m`\n\n"
+        f"**Data Health:**\n"
+        f"• Status: {health['status']}\n"
+        f"• Size: `{health['size_kb']} KB`\n"
+        f"• Records: `{health['records']}`\n\n"
+        f"**Event System:**\n"
+        f"• {event_status}\n\n"
+        f"**System Status:** {system_status}\n"
+        f"**Corruption:** {corruption_text}\n\n"
+        f"**Active Systems:**\n"
+        f"• Tickets: `{len(bot.db.get('tickets', {}))}` active\n"
+        f"• Memory: `{len(bot.db.get('memory', {}))}` records\n"
+        f"• Interviews: `{len(bot.db.get('interviews', {}))}` pending\n"
+        f"• Citizens: `{len(bot.db.get('social_credit', {}))}` tracked"
+    )
+    
+    # Apply corruption effect to description if active
+    if corruption_active:
+        description = corrupt_message(description)
+    
+    embed = create_embed("📡 WATCHER SYSTEM STATUS", description, color=desc_color)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="pingwatcher", description="Ping the Watcher")
+async def pingwatcher(interaction: discord.Interaction):
+    """Check Watcher latency and get a creepy response."""
+    latency = round(bot.latency * 1000)
+    creepy_lines = [
+        "I responded faster than you expected. Didn't I?",
+        "Were you waiting long? I'm always watching.",
+        "Latency is just a suggestion.",
+        "I don't sleep. I observe.",
+        "Your ping arrived before you realized you sent it.",
+    ]
+    embed = create_embed(
+        "🛰️ WATCHER PING",
+        f"⏱️ **Latency:** `{latency}ms`\n🟢 **Status:** ONLINE\n\n*{random.choice(creepy_lines)}*",
+        color=0x00ffff
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="prophecy", description="Receive a prophecy")
+async def prophecy(interaction: discord.Interaction):
+    """Get an ominous prediction from the Watcher."""
+    prophecies = [
+        "🌑 Someone will betray the trust placed in them.",
+        "📈 The numbers will spike. Then crash.",
+        "🔮 A truth will surface, buried since the beginning.",
+        "⚠️ The Wall responds to observation. Be careful.",
+        "👁️ Three of you will leave. Only two will return.",
+        "💀 The missing data... it remembers.",
+        "🧿 Something sleeps beneath the surface. It's waking.",
+    ]
+    embed = create_embed("🔮 PROPHECY", random.choice(prophecies), color=0x9900ff)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="confess", description="Confess your sins to the Watcher")
+async def confess(interaction: discord.Interaction, confession: str):
+    """Confess a wrongdoing. The Watcher judges."""
+    judgments = [
+        "✅ Honesty noted. +5 social credit.",
+        "❌ Pathetic. -10 social credit.",
+        "🤔 Interesting. Nothing changes.",
+        "⚠️ This will be recorded.",
+        "😈 I appreciate the entertainment. No reward.",
+    ]
+    uid = str(interaction.user.id)
+    judgment = random.choice(judgments)
+    
+    # Random credit change
+    if "+5" in judgment:
+        update_social_credit(uid, 5)
+    elif "-10" in judgment:
+        update_social_credit(uid, -10)
+    
+    embed = create_embed("🧾 CONFESSION JUDGED", f"*\"{confession}\"*\n\n**Verdict:** {judgment}", color=0xff6600)
+    await interaction.response.send_message(embed=embed, ephemeral=False)
+
+def get_citizen_tier(score: int) -> tuple:
+    """Get tier name and color based on social credit score."""
+    if score >= 80:
+        return ("🟢 Trusted Asset", 0x00ff00)
+    elif score >= 30:
+        return ("🟡 Compliant Citizen", 0xffff00)
+    elif score >= 0:
+        return ("🟠 Under Observation", 0xff9900)
+    else:
+        return ("🔴 Liability", 0xff0000)
+
+@bot.tree.command(name="dossier", description="Generate a classified file on a user")
+async def dossier(interaction: discord.Interaction, user: discord.User):
+    """Generate a fake classified dossier with redactions."""
+    uid = str(user.id)
+    score = bot.db.get("social_credit", {}).get(uid, 0)
+    tier, _ = get_citizen_tier(score)
+    memory = bot.db.get("memory", {}).get(uid, {})
+    
+    redacted_notes = [
+        f"Interaction count: {len(memory.get('interactions', []))} (MONITORING)",
+        "██████████ [CLASSIFIED]",
+        "Subject exhibits irregular patterns.",
+        "██████████ [REDACTED]",
+        "Compliance rating: QUESTIONABLE",
+    ]
+    
+    content = f"""```
+╔════════════════════════════════════════╗
+║           CLASSIFIED DOSSIER            ║
+╠════════════════════════════════════════╣
+║ SUBJECT: {user.name}
+║ ID: {user.id}
+║ TIER: {tier}
+║ SCORE: {score}
+╠════════════════════════════════════════╣
+║ NOTES:
+"""
+    for note in redacted_notes:
+        content += f"║ {note}\n"
+    content += "║\n╚════════════════════════════════════════╝```"
+    
+    embed = discord.Embed(title="📁 CLASSIFIED DOSSIER", description=content, color=0x333333)
+    embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET • EYES ONLY")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="incident", description="Report a citizen for suspicious behavior")
+async def incident(interaction: discord.Interaction, suspect: discord.User, reason: str):
+    """Report a citizen. Bot determines if valid concern, paranoia, or false accusation."""
+    uid_reporter = str(interaction.user.id)
+    uid_suspect = str(suspect.id)
+    
+    # Check privilege
+    if not can_access_feature(uid_reporter, "report"):
+        await interaction.response.send_message("❌ Your privilege level prevents filing reports.", ephemeral=True)
+        return
+    
+    # Bot verdict (random)
+    verdicts = [
+        ("valid_concern", "✅ **VALID CONCERN REGISTERED**", 3),  # reporter +3, suspect -5
+        ("paranoia", "⚠️ **UNFOUNDED SUSPICION DETECTED**", 0),  # no change
+        ("false_accusation", "❌ **FALSE ACCUSATION RECORDED**", -5),  # reporter -5
+    ]
+    verdict_type, verdict_text, reporter_change = random.choice(verdicts)
+    
+    # Apply credit changes
+    update_social_credit(uid_reporter, reporter_change)
+    if verdict_type == "valid_concern":
+        update_social_credit(uid_suspect, -5)
+    
+    # Log incident
+    incident_record = {
+        "reporter": interaction.user.name,
+        "suspect": suspect.name,
+        "reason": reason,
+        "verdict": verdict_type,
+        "timestamp": datetime.now().isoformat()
+    }
+    bot.db.setdefault("incidents", []).append(incident_record)
+    
+    # Log to infraction_log
+    bot.db.setdefault("infraction_log", {}).setdefault(uid_suspect, []).append({
+        "type": verdict_type.upper(),
+        "reason": reason,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+    })
+    save_data(bot.db)
+    
+    embed = create_embed(
+        "📋 INCIDENT REPORT",
+        f"{verdict_text}\n\n"
+        f"**Reporter:** {interaction.user.mention}\n"
+        f"**Suspect:** {suspect.mention}\n"
+        f"**Reason:** {reason}\n\n"
+        f"*Credit adjustments applied.*",
+        color=0xff6b6b
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="watchlist", description="View citizens under surveillance")
+async def watchlist(interaction: discord.Interaction):
+    """View vague surveillance status of under-observation citizens."""
+    under_observation = []
+    liability = []
+    
+    for uid, score in bot.db.get("social_credit", {}).items():
+        if score < 0:
+            liability.append((uid, score))
+        elif score < 30:
+            under_observation.append((uid, score))
+    
+    total_watched = len(under_observation) + len(liability)
+    
+    embed = create_embed(
+        "👁️ WATCHLIST STATUS",
+        f"🟠 **Under Observation:** `{len(under_observation)}` citizens\n"
+        f"🔴 **Liabilities:** `{len(liability)}` citizens\n\n"
+        f"**Total Under Review:** `{total_watched}`\n\n"
+        f"*Detailed information restricted. Use `/socialcredit liabilities` for clearance level.*",
+        color=0xff6b6b
+    )
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="trial", description="Moral dilemma voting challenge")
+async def trial(interaction: discord.Interaction):
+    """Present a moral dilemma. Minority loses social credit."""
+    dilemmas = [
+        {
+            "text": "A citizen found 50 credits. Should they:\nA) Return it anonymously\nB) Keep it for themselves",
+            "options": ["A) Return it anonymously", "B) Keep it"],
+        },
+        {
+            "text": "You witness someone breaking a minor rule. Should you:\nA) Report them\nB) Stay silent",
+            "options": ["A) Report them", "B) Stay silent"],
+        },
+        {
+            "text": "A friend asks you to lie for them. Should you:\nA) Refuse and stay loyal to truth\nB) Agree to help your friend",
+            "options": ["A) Refuse and stay loyal", "B) Agree to help"],
+        },
+    ]
+    
+    dilemma = random.choice(dilemmas)
+    trial_id = f"trial_{interaction.user.id}_{int(time.time())}"
+    
+    # Store trial data
+    bot.db.setdefault("trials", {})[trial_id] = {
+        "participants": [],
+        "votes_a": [],
+        "votes_b": [],
+        "timestamp": time.time()
+    }
+    save_data(bot.db)
+    
+    embed = create_embed(
+        "⚖️ MORAL TRIAL",
+        f"{dilemma['text']}\n\n*React with A or B to vote. Minority loses 5 credit.*",
+        color=0x9900ff
+    )
+    msg = await interaction.response.send_message(embed=embed)
+    
+    # Add emoji reactions
+    await msg.add_reaction("🅰️")
+    await msg.add_reaction("🅱️")
+
+@bot.tree.command(name="task", description="Receive a micro-quest")
+async def task(interaction: discord.Interaction):
+    """Receive a small task. Completion affects social credit."""
+    tasks_list = [
+        {"name": "Be Active", "desc": "Participate in 3 conversations over the next hour", "reward": 3},
+        {"name": "Speak Kindly", "desc": "Send a compliment or positive message", "reward": 2},
+        {"name": "Silence", "desc": "Send no messages for 15 minutes", "reward": 1},
+        {"name": "Introspection", "desc": "React thoughtfully to a message in #general", "reward": 2},
+        {"name": "Community", "desc": "Start a respectful debate on a topic", "reward": 4},
+    ]
+    
+    chosen_task = random.choice(tasks_list)
+    uid = str(interaction.user.id)
+    task_id = f"task_{uid}_{int(time.time())}"
+    
+    # Store task
+    bot.db.setdefault("tasks", {})[task_id] = {
+        "user_id": uid,
+        "task": chosen_task["name"],
+        "timestamp": time.time(),
+        "completed": False
+    }
+    save_data(bot.db)
+    
+    embed = create_embed(
+        "📝 TASK ASSIGNED",
+        f"**Task:** {chosen_task['name']}\n"
+        f"**Description:** {chosen_task['desc']}\n"
+        f"**Reward:** `+{chosen_task['reward']}` social credit if completed\n\n"
+        f"*The Watcher is watching. Complete it.*",
+        color=0x00ccff
+    )
+    await interaction.response.send_message(embed=embed)
+
 # --- EVENTS ---
 @bot.event
 async def on_ready():
@@ -694,6 +1238,10 @@ async def on_message(message):
                     f"User says: {message.content[:500]}"
                 )
                 
+                # Apply corruption if corruption mode is active
+                if should_enable_corruption():
+                    ai_response = corrupt_message(ai_response)
+                
                 # Store in memory and track engagement
                 add_memory(uid, "interaction", f"Ticket message: {message.content[:100]}")
                 update_social_credit(uid, len(message.content) // 50)
@@ -741,6 +1289,10 @@ async def on_message(message):
                     f"AI Memory: {bot.db.get('memory', {}).get(uid_mention, {})}\n"
                     f"User says: {message.content[:500]}"
                 )
+                
+                # Apply corruption if corruption mode is active
+                if should_enable_corruption():
+                    ai_response = corrupt_message(ai_response)
                 
                 # Store memory and give engagement bonus
                 add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
