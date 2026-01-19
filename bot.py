@@ -230,7 +230,15 @@ async def run_huggingface(prompt: str) -> str:
             payload = {
                 "model": AI_MODEL,
                 "messages": [
-                    {"role": "system", "content": f"You are the Nimbror Watcher AI. Respond briefly and mysteriously.{corrupting_trigger}"},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the Nimbror Watcher AI. Use the provided lore. "
+                            "Respond in one paragraph, maximum 4 short sentences. "
+                            "Be unsettling, cryptic, and slightly threatening. "
+                            "No markdown beyond what the user supplies." + corrupting_trigger
+                        )
+                    },
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.7,
@@ -498,6 +506,19 @@ async def safe_get_channel(channel_id: int) -> Optional[discord.TextChannel]:
     except:
         return None
 
+def ensure_ok(response, context: str = "supabase"):
+    """Raise if Supabase response has an error attribute."""
+    if hasattr(response, "error") and response.error:
+        raise Exception(f"{context}: {response.error}")
+
+async def get_or_create_user(user_id: str) -> bool:
+    """Alias to ensure user exists; returns True if user exists/created."""
+    return await ensure_user_exists(user_id)
+
+async def add_social_credit(user_id: str, amount: int, reason: str = "system") -> bool:
+    """Wrapper to adjust social credit in Supabase users table."""
+    return await update_user_credit(user_id, amount, reason)
+
 async def log_error(msg):
     """Log errors with clean embed to ERROR_LOG_CHANNEL_ID (rate-limited)."""
     if not ERROR_LOG_ID:
@@ -583,14 +604,16 @@ async def ensure_user_exists(user_id: str) -> bool:
     try:
         # Check if user exists
         response = supabase.table("users").select("id").eq("id", user_id).execute()
+        ensure_ok(response, "users select")
         
         if not response.data or len(response.data) == 0:
             # User doesn't exist, create them
-            supabase.table("users").insert({
+            insert_resp = supabase.table("users").insert({
                 "id": user_id,
                 "social_credit": 0,
                 "created_at": datetime.now().isoformat()
             }).execute()
+            ensure_ok(insert_resp, "users insert")
         
         return True
     except Exception as e:
@@ -620,9 +643,10 @@ async def update_user_credit(user_id: str, amount: int, reason: str = "system") 
         new_credit = max(0, current + amount)  # Prevent negative credits
         
         # Update user
-        supabase.table("users").update({
+        resp = supabase.table("users").update({
             "social_credit": new_credit
         }).eq("id", user_id).execute()
+        ensure_ok(resp, "users update")
         
         return True
     except Exception as e:
@@ -633,8 +657,11 @@ async def get_shop_items() -> list:
     """Fetch all shop items from Supabase."""
     try:
         response = supabase.table("shop_items").select("*").execute()
-        if response.data:
-            return response.data
+        ensure_ok(response, "shop_items select")
+        return response.data or []
+    except Exception as e:
+        print(f"⚠️ get_shop_items error: {str(e)[:100]}")
+        await log_error(f"get_shop_items: {str(e)}")
         return []
     except Exception as e:
         print(f"\u26a0️ get_shop_items error: {str(e)[:100]}")
@@ -667,6 +694,14 @@ async def get_user_inventory(user_id: str) -> dict:
     except Exception as e:
         await log_error(f"get_user_inventory: {str(e)}")
         return {}
+
+def find_item_by_name(items: list, name: str) -> Optional[dict]:
+    """Case-insensitive exact match on item name from a list of items."""
+    name_lower = name.strip().lower()
+    for item in items:
+        if str(item.get("name", "")).lower() == name_lower:
+            return item
+    return None
 
 async def purchase_item(user_id: str, item_id: int, item_name: str, item_cost: int) -> tuple:
     """
@@ -852,6 +887,43 @@ def can_access_feature(user_id: str, feature: str) -> bool:
         "trusted_asset": []
     }
     return feature not in restricted_features.get(privilege, [])
+
+# Ten-question AI-driven interview prompts
+INTERVIEW_QUESTIONS = [
+    "Why do you want access to Nimbror?",
+    "How would you respond if you witnessed rule-breaking?",
+    "Describe your typical online behavior in three words.",
+    "What do you consider unacceptable conduct here?",
+    "How do you handle disagreements in a community?",
+    "What value will you add to Nimbror?",
+    "How much time per week will you spend here?",
+    "If challenged by staff, how will you react?",
+    "Name a situation where you de-escalated conflict.",
+    "Any reason we should deny you access?"
+]
+
+async def score_interview_answer(question: str, answer: str) -> int:
+    """Use the concise AI to score an answer (0/1). Falls back to heuristics on failure."""
+    prompt = (
+        "You are the Nimbror Watcher. Evaluate an interview answer. "
+        "Return only '1' for acceptable/cooperative and '0' for evasive, hostile, or off-topic. "
+        f"Question: {question}\nAnswer: {answer}"
+    )
+    try:
+        ai = await run_huggingface_concise(prompt)
+        if ai:
+            cleaned = ai.strip()
+            if cleaned.startswith("1"):
+                return 1
+            if cleaned.startswith("0"):
+                return 0
+    except Exception as e:
+        await log_error(f"score_interview_answer: {str(e)}")
+    # Heuristic fallback
+    lower = (answer or "").lower()
+    if len(lower) > 20 and not any(bad in lower for bad in ["kill", "hate", "spam", "troll", "bot raid"]):
+        return 1
+    return 0
 
 def safe_get_member(guild: discord.Guild, user_id_str: str) -> Optional[discord.Member]:
     """Safely retrieve guild member by string ID. Returns None if invalid or not found."""
@@ -1177,7 +1249,15 @@ async def run_huggingface_concise(prompt: str) -> str:
             payload = {
                 "model": AI_MODEL,
                 "messages": [
-                    {"role": "system", "content": "You are a Discord bot. When mentioned directly, respond in plain text only—no markdown, emojis, or formatting. Keep it brief: 2-4 short sentences max. No paragraphs, no lists, no explanations unless asked. Be casual and direct."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the Nimbror Watcher. Be unsettling, cryptic, and slightly threatening. "
+                            "No friendliness. Speak like a paranoid surveillance AI. "
+                            "Plain text only—no markdown, no emojis, no lists. "
+                            "Keep it tight: 1-4 short sentences max."
+                        )
+                    },
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.7,
@@ -1197,21 +1277,26 @@ async def run_huggingface_concise(prompt: str) -> str:
 async def help_cmd(interaction: discord.Interaction):
     cmds = (
         "👁️ **SURVEILLANCE & INTEL**\n"
-        "`/intel` — Classified information\n"
-        "`/watchlist` — View citizens under observation\n"
-        "`/dossier @user` — Generate classified file\n"
-        "`/pingwatcher` — Check bot latency\n\n"
+        "`/intel` — Drips a single classified breadcrumb (randomized paranoia payload).\n"
+        "`/watchlist` — Summarizes liabilities and under-observation citizens with live counts.\n"
+        "`/dossier @user` — Builds a redacted file with score, tier, and redactions to unsettle targets.\n"
+        "`/pingwatcher` — Latency probe with creepy flavor (1-4 sentences).\n\n"
         
         "🎫 **REPORTS & ISSUES**\n"
-        "`/ticket` — File a secure issue (serious/general)\n"
-        "`/incident @user reason` — Report suspicious behavior\n"
-        "`/confess confession` — Confess to the Watcher\n\n"
+        "`/ticket` — Opens a DM-driven secure channel; routes to staff with note controls.\n"
+        "`/incident @user reason` — Supabase-backed report; auto-verdict adjusts both citizens' credit and logs infractions.\n"
+        "`/confess confession` — Whisper secrets to the Watcher; stored against your ID for future judgment.\n\n"
         
         "⚖️ **CITIZEN SYSTEM**\n"
-        "`/socialcredit [mode] [@user]` — View scores/leaderboard/history\n"
-        "`/trial` — Moral dilemma voting (2 min)\n"
-        "`/task` — Receive a micro-quest\n"
-        "`/status` — System health report\n\n"
+        "`/socialcredit [mode] [@user]` — Modes: self, target, leaderboard, history; reflects Supabase truth source.\n"
+        "`/trial` — Two-minute dilemmas; minority loses credit; votes tracked via reactions.\n"
+        "`/task` — Issues a micro-quest with cooldown tracking.\n"
+        "`/status` — Full system heartbeat: uptime, data health, event status, corruption flag.\n\n"
+
+        "🛒 **ECONOMY**\n"
+        "`/shop` — Pulls live shop catalog from Supabase; shows tiers, prices, and purchase hint.\n"
+        "`/inventory` — Lists your purchased items aggregated by quantity.\n"
+        "`/compliment @user message` — Grants target credits (Supabase) with cooldown and anti-self checks.\n\n"
         
         "💳 **SOCIAL CREDIT TIERS**\n"
         "🟢 **Trusted Asset** (80+) — Full access, exemplary citizen\n"
@@ -1229,7 +1314,7 @@ async def help_cmd(interaction: discord.Interaction):
         "`/restart` — Fake system restart\n"
         "`/notes @user` — View staff ticket notes\n"
         "`/memory [view/clear] @user` — Manage AI memory\n"
-        "`/json [section]` — View database\n"
+        "`/memorydump [section]` — View database\n"
     )
     embed = create_embed(
         "Commands",
@@ -1495,17 +1580,17 @@ async def socialcredit(interaction: discord.Interaction, mode: str = "user", use
     )
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="json", description="View internal system data (admin only)")
+@bot.tree.command(name="memorydump", description="View internal system data (admin only)")
 @app_commands.checks.has_permissions(administrator=True)
-async def json_view(interaction: discord.Interaction, section: Optional[str] = None):
-    """Admin-only command to view JSON database sections."""
+async def memorydump(interaction: discord.Interaction, section: Optional[str] = None):
+    """Admin-only command to view persisted Supabase state sections."""
     data = bot.db
     if section:
         content = json.dumps(data.get(section, {}), indent=2)
-        title = f"📁 JSON VIEW — {section}"
+        title = f"📁 STATE VIEW — {section}"
     else:
         content = json.dumps(data, indent=2)
-        title = "📦 FULL JSON STATE"
+        title = "📦 FULL STATE"
     if len(content) > 1900:
         content = content[:1900] + "\n...TRUNCATED..."
     embed = create_embed(title, f"```json\n{content}\n```", color=0xff4444)
@@ -1604,38 +1689,56 @@ async def prophecy(interaction: discord.Interaction):
 
 @bot.tree.command(name="shop", description="Browse and purchase items")
 async def shop(interaction: discord.Interaction):
-    """Display shop with purchasable items."""
-    await interaction.response.defer()
-    
-    # Get current user credit
+    """Display shop items with user credit and tier info."""
+    await interaction.response.defer(ephemeral=False)
+
     user_id = str(interaction.user.id)
-    current_credit = await get_user_credit(user_id)
-    
-    # Get all shop items
-    items = await get_shop_items()
-    
+
+    try:
+        await ensure_user_exists(user_id)
+        current_credit = await get_user_credit(user_id)
+        items = await get_shop_items()
+    except Exception as e:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Shop",
+                "The terminal flickers. Supabase rejected the request.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
+        print(f"❌ shop error: {type(e).__name__}: {str(e)[:150]}")
+        return
+
     if not items:
         await interaction.followup.send(
             embed=create_embed(
                 "Shop",
-                "No items available.",
+                "Empty shelves. Someone wiped the ledger.",
                 color=EMBED_COLORS["neutral"]
             )
         )
         return
-    
-    # Build shop item list with tier emojis
-    item_list = "\n".join([
-        f"{get_tier_emoji(item.get('tier', 'common'))} **{item['name']}** — {item['cost']} credits\n{item['description'][:60]}"
-        for item in items[:10]  # Show first 10 items
-    ])
-    
+
+    lines = []
+    for item in items[:10]:
+        tier = item.get("tier", "common")
+        desc = item.get("description", "")
+        snippet = (desc[:80] + "…") if len(desc) > 80 else desc
+        lines.append(
+            f"{get_tier_emoji(tier)} **{item['name']}** — {item['cost']} credits\n{snippet}"
+        )
+
+    body = (
+        f"Credits: **{current_credit}**\nUse `/buy <item>` to purchase.\n\n" + "\n".join(lines)
+    )
+
     embed = create_embed(
         "Shop",
-        f"Your credits: {current_credit}\n\n{item_list}",
+        body,
         color=EMBED_COLORS["info"]
     )
-    
+
     view = ShopItemSelect(interaction.user.id, items)
     await interaction.followup.send(embed=embed, view=view)
 
@@ -1962,56 +2065,89 @@ async def dossier(interaction: discord.Interaction, user: discord.User):
 
 @bot.tree.command(name="incident", description="Report a citizen for suspicious behavior")
 async def incident(interaction: discord.Interaction, suspect: discord.User, reason: str):
-    """Report a citizen. Bot determines if valid concern, paranoia, or false accusation."""
+    """Report a citizen. Bot determines if valid concern, paranoia, or false accusation (Supabase-backed)."""
+    await interaction.response.defer(ephemeral=False)
+
     uid_reporter = str(interaction.user.id)
     uid_suspect = str(suspect.id)
-    
-    # Check privilege - liabilities cannot file reports
-    if get_privilege_level(uid_reporter) == "liability":
-        await interaction.response.send_message("❌ Your privilege level prevents filing reports.", ephemeral=True)
+
+    if uid_reporter == uid_suspect:
+        await interaction.followup.send(
+            embed=create_embed(
+                "Invalid",
+                "Self-report detected. Nice try.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
         return
-    
-    # Bot verdict (random)
-    verdicts = [
-        ("valid_concern", "✅ **VALID CONCERN REGISTERED**", 3),  # reporter +3, suspect -5
-        ("paranoia", "⚠️ **UNFOUNDED SUSPICION DETECTED**", 0),  # no change
-        ("false_accusation", "❌ **FALSE ACCUSATION RECORDED**", -5),  # reporter -5
-    ]
-    verdict_type, verdict_text, reporter_change = random.choice(verdicts)
-    
-    # Apply credit changes
-    update_social_credit(uid_reporter, reporter_change)
-    if verdict_type == "valid_concern":
-        update_social_credit(uid_suspect, -5)
-    
-    # Log incident
-    incident_record = {
-        "reporter": interaction.user.name,
-        "suspect": suspect.name,
-        "reason": reason,
-        "verdict": verdict_type,
-        "timestamp": datetime.now().isoformat()
-    }
-    bot.db.setdefault("incidents", []).append(incident_record)
-    
-    # Log to infraction_log
-    bot.db.setdefault("infraction_log", {}).setdefault(uid_suspect, []).append({
-        "type": verdict_type.upper(),
-        "reason": reason,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
-    })
-    save_data(bot.db)
-    
-    embed = create_embed(
-        "📋 INCIDENT REPORT",
-        f"{verdict_text}\n\n"
-        f"**Reporter:** {interaction.user.mention}\n"
-        f"**Suspect:** {suspect.mention}\n"
-        f"**Reason:** {reason}\n\n"
-        f"*Credit adjustments applied.*",
-        color=0xff6b6b
-    )
-    await interaction.response.send_message(embed=embed)
+
+    try:
+        # Ensure both users exist in Supabase
+        await ensure_user_exists(uid_reporter)
+        await ensure_user_exists(uid_suspect)
+
+        # Privilege check (liabilities blocked)
+        reporter_credit = await get_user_credit(uid_reporter)
+        if reporter_credit < 0:
+            await interaction.followup.send(
+                "❌ Your privilege level prevents filing reports.",
+                ephemeral=True
+            )
+            return
+
+        verdicts = [
+            ("valid_concern", "✅ **VALID CONCERN REGISTERED**", 3),  # reporter +3, suspect -5
+            ("paranoia", "⚠️ **UNFOUNDED SUSPICION DETECTED**", 0),  # no change
+            ("false_accusation", "❌ **FALSE ACCUSATION RECORDED**", -5),  # reporter -5
+        ]
+        verdict_type, verdict_text, reporter_change = random.choice(verdicts)
+
+        # Apply credit changes via Supabase
+        await update_user_credit(uid_reporter, reporter_change, f"incident:{verdict_type}")
+        if verdict_type == "valid_concern":
+            await update_user_credit(uid_suspect, -5, "incident:penalty")
+
+        # Refresh local cache for downstream features
+        bot.db.setdefault("social_credit", {})[uid_reporter] = await get_user_credit(uid_reporter)
+        bot.db.setdefault("social_credit", {})[uid_suspect] = await get_user_credit(uid_suspect)
+
+        incident_record = {
+            "reporter": interaction.user.name,
+            "suspect": suspect.name,
+            "reason": reason,
+            "verdict": verdict_type,
+            "timestamp": datetime.now().isoformat()
+        }
+        bot.db.setdefault("incidents", []).append(incident_record)
+
+        bot.db.setdefault("infraction_log", {}).setdefault(uid_suspect, []).append({
+            "type": verdict_type.upper(),
+            "reason": reason,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        save_data(bot.db)
+
+        embed = create_embed(
+            "📋 INCIDENT REPORT",
+            f"{verdict_text}\n\n"
+            f"**Reporter:** {interaction.user.mention}\n"
+            f"**Suspect:** {suspect.mention}\n"
+            f"**Reason:** {reason}\n\n"
+            f"*Credit adjustments applied.*",
+            color=0xff6b6b
+        )
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await log_error(f"incident: {str(e)}")
+        await interaction.followup.send(
+            embed=create_embed(
+                "Incident",
+                "Data link failed. Report not filed.",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
 
 @bot.tree.command(name="watchlist", description="View citizens under surveillance")
 async def watchlist(interaction: discord.Interaction):
@@ -2192,23 +2328,26 @@ async def on_ready():
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
     
-    # Send startup announcement to announce channel only
-    if ANNOUNCE_CHANNEL_ID:
-        try:
-            channel = await safe_get_channel(ANNOUNCE_CHANNEL_ID)
-            if channel:
-                embed = discord.Embed(
-                    title="🤖 Bot Started",
-                    description=f"**{bot.user.name}** is now online",
-                    color=0x00FF00,
-                    timestamp=discord.utils.utcnow()
-                )
-                embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
-                embed.add_field(name="Status", value="Ready", inline=True)
-                embed.set_footer(text=f"ID: {bot.user.id}")
-                await channel.send(embed=embed)
-        except Exception as e:
-            print(f"❌ Failed to send startup announcement: {e}")
+    # Send startup announcement to announce channel only; never broadcast
+    # If channel is missing or invalid, silently skip (no fallbacks)
+    if not ANNOUNCE_CHANNEL_ID:
+        return
+    try:
+        channel = await safe_get_channel(ANNOUNCE_CHANNEL_ID)
+        if not channel:
+            return
+        embed = discord.Embed(
+            title="🤖 Bot Started",
+            description=f"**{bot.user.name}** is now online",
+            color=0x00FF00,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="Guilds", value=str(len(bot.guilds)), inline=True)
+        embed.add_field(name="Status", value="Ready", inline=True)
+        embed.set_footer(text=f"ID: {bot.user.id}")
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"❌ Failed to send startup announcement: {e}")
 
 @bot.event
 async def on_disconnect():
@@ -2221,9 +2360,19 @@ async def on_member_join(member):
     if member.bot:
         return
     try:
-        bot.db.setdefault("interviews", {})[str(member.id)] = {"step": 1}
+        bot.db.setdefault("interviews", {})[str(member.id)] = {
+            "index": 0,
+            "score": 0,
+            "questions": INTERVIEW_QUESTIONS
+        }
         save_data(bot.db)
-        await safe_send_dm(member, embed=create_embed("👁️ SCREENING", "Question 1: Why have you sought refuge on Nimbror?"))
+        await safe_send_dm(
+            member,
+            embed=create_embed(
+                "👁️ SCREENING",
+                f"Q1/10: {INTERVIEW_QUESTIONS[0]}"
+            )
+        )
     except Exception as e:
         print(f"⚠️ on_member_join error: {e}")
 
@@ -2295,33 +2444,84 @@ async def on_message(message):
     try:
         # --- Interview ---
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("interviews", {}):
-            state = bot.db["interviews"].get(uid, {"step": 1})
-            if state.get("step") == 1:
-                state["step"] = 2
-                add_memory(uid, "interaction", f"Answered Q1: {message.content[:100]}")
-                await message.author.send(embed=create_embed("👁️ SCREENING", "Question 2: Who is Jessica's father?"))
-            elif state.get("step") == 2:
-                correct = any(x in message.content.lower() for x in ["jeffo", "jeffrey"])
-                if correct:
-                    if bot.guilds and VERIFIED_ROLE_ID:
-                        try:
-                            guild = bot.guilds[0]
-                            member = guild.get_member(message.author.id)
-                            role = guild.get_role(VERIFIED_ROLE_ID)
-                            if member and role:
-                                await member.add_roles(role)
-                        except:
-                            pass
-                    add_memory(uid, "interaction", "Completed interview successfully")
-                    update_social_credit(uid, 10)
-                    embed = create_embed("✅ ACCESS GRANTED", "Welcome to Nimbror, Citizen.", color=EMBED_COLORS["success"])
-                    await message.author.send(embed=embed)
-                    bot.db["interviews"].pop(uid, None)
-                else:
-                    add_memory(uid, "interaction", f"Answered Q2 incorrectly: {message.content[:100]}")
-                    update_social_credit(uid, -3)
-                    await message.author.send("❌ Incorrect. Who is Jessica's father?")
+            state = bot.db["interviews"].get(uid, {"index": 0, "score": 0, "questions": INTERVIEW_QUESTIONS})
+            questions = state.get("questions", INTERVIEW_QUESTIONS)
+            idx = state.get("index", 0)
+            total_questions = len(questions)
+
+            # Score current answer
+            if idx < total_questions:
+                current_q = questions[idx]
+                points = await score_interview_answer(current_q, message.content)
+                state["score"] = state.get("score", 0) + points
+                add_memory(uid, "interaction", f"Interview Q{idx+1} answered ({points}/1)")
+                state["index"] = idx + 1
+
+            idx = state["index"]
+            score_total = state.get("score", 0)
+
+            # If interview complete, evaluate outcome
+            if idx >= total_questions:
+                bot.db["interviews"].pop(uid, None)
+                save_data(bot.db)
+
+                outcome_embed = None
+                # Threshold logic: <=4 fail, 5-6 requires human, >=7 pass, 10 perfect
+                if score_total <= 4:
+                    update_social_credit(uid, -5)
+                    outcome_embed = create_embed(
+                        "❌ ACCESS DENIED",
+                        f"Score: {score_total}/10. You failed screening.",
+                        color=EMBED_COLORS["error"]
+                    )
+                    await message.author.send(embed=outcome_embed)
+                    return
+
+                if score_total <= 6:
+                    update_social_credit(uid, 0)
+                    outcome_embed = create_embed(
+                        "⚠️ HUMAN REVIEW REQUIRED",
+                        f"Score: {score_total}/10. Awaiting staff intervention.",
+                        color=EMBED_COLORS["warning"]
+                    )
+                    await message.author.send(embed=outcome_embed)
+
+                    # Ping owner in announce for human intervention
+                    if ANNOUNCE_CHANNEL_ID:
+                        ch = await safe_get_channel(ANNOUNCE_CHANNEL_ID)
+                        if ch:
+                            await ch.send(f"<@765028951541940225> interview review needed for {message.author.mention} (score {score_total}/10)")
+                    return
+
+                # Passed
+                credit_bonus = 10 if score_total == total_questions else 5
+                update_social_credit(uid, credit_bonus)
+
+                # Grant verified role if configured
+                if bot.guilds and VERIFIED_ROLE_ID:
+                    try:
+                        guild = bot.guilds[0]
+                        member = guild.get_member(message.author.id)
+                        role = guild.get_role(VERIFIED_ROLE_ID)
+                        if member and role:
+                            await member.add_roles(role)
+                    except Exception as e:
+                        await log_error(f"interview role add: {str(e)}")
+
+                outcome_text = "Perfect pass. Welcome to Nimbror." if score_total == total_questions else "Pass. Proceed quietly."
+                outcome_embed = create_embed(
+                    "✅ ACCESS GRANTED",
+                    f"Score: {score_total}/10. {outcome_text}",
+                    color=EMBED_COLORS["success"]
+                )
+                await message.author.send(embed=outcome_embed)
+                return
+
+            # Continue to next question
+            bot.db["interviews"][uid] = state
             save_data(bot.db)
+            next_q = questions[idx]
+            await message.author.send(embed=create_embed("👁️ SCREENING", f"Q{idx+1}/{total_questions}: {next_q}"))
             return
 
         # --- Tickets / DM AI ---
