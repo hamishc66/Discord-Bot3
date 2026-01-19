@@ -26,6 +26,7 @@ STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
+INVITE_URL = os.getenv("INVITE_URL")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -890,16 +891,21 @@ def can_access_feature(user_id: str, feature: str) -> bool:
 
 # Ten-question AI-driven interview prompts
 INTERVIEW_QUESTIONS = [
-    "Why do you want access to Nimbror?",
-    "How would you respond if you witnessed rule-breaking?",
-    "Describe your typical online behavior in three words.",
-    "What do you consider unacceptable conduct here?",
-    "How do you handle disagreements in a community?",
-    "What value will you add to Nimbror?",
-    "How much time per week will you spend here?",
-    "If challenged by staff, how will you react?",
-    "Name a situation where you de-escalated conflict.",
-    "Any reason we should deny you access?"
+    # Professional (3)
+    "What value will you add to Nimbror in a professional sense?",
+    "How do you handle disagreements while staying professional?",
+    "Describe a time you owned a mistake and resolved it.",
+
+    # Creepy / eerie (3)
+    "What keeps you awake when the room goes silent?",
+    "Have you ever felt watched while typing here?",
+    "If the Watcher whispered a command, would you obey?",
+
+    # Nambour State College (4)
+    "Do you attend Nambour State College (NSC)?",
+    "Which NSC area do you frequent most during breaks?",
+    "How would you represent NSC in this community?",
+    "What NSC rule do you think matters most online?"
 ]
 
 async def score_interview_answer(question: str, answer: str) -> int:
@@ -1217,6 +1223,101 @@ class TicketView(View):
             save_data(bot.db)
         await interaction.message.edit(content="🛰️ Ticket closed.", embed=None, view=None)
         await interaction.response.send_message("✅ Ticket closed.", ephemeral=True)
+
+
+class InterviewFailView(View):
+    """Buttons for users who fail screening to either retry (kick) or request human help."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+
+    @discord.ui.button(label="Kick & Retry", style=discord.ButtonStyle.danger, custom_id="interview_kick_retry")
+    async def kick_retry(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only the screened user can press this.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        guild = bot.guilds[0] if bot.guilds else None
+        if not guild:
+            await interaction.response.send_message(
+                embed=create_embed("Error", "No guild context available to kick.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        member = guild.get_member(self.user_id)
+        if not member:
+            await interaction.response.send_message(
+                embed=create_embed("Error", "You are not in the guild. Request an invite to retry.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        try:
+            await member.kick(reason="Interview failure — user requested retry")
+        except Exception as e:
+            await log_error(f"interview kick retry: {str(e)}")
+            await interaction.response.send_message(
+                embed=create_embed("Error", "Kick failed. Staff has been notified.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        invite_text = f"Rejoin via: {INVITE_URL}" if INVITE_URL else "Request a fresh invite from staff."
+        await interaction.response.send_message(
+            embed=create_embed(
+                "Kicked for Retry",
+                f"You were removed to restart screening. {invite_text}",
+                color=EMBED_COLORS["warning"]
+            ),
+            ephemeral=True
+        )
+        self.stop()
+
+    @discord.ui.button(label="Request Human Assistance", style=discord.ButtonStyle.primary, custom_id="interview_human_assist")
+    async def request_human(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only the screened user can press this.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        uid = str(self.user_id)
+        if uid in bot.db.get("tickets", {}):
+            await interaction.response.send_message(
+                embed=create_embed("Ticket Exists", "You already have an open ticket. Staff will respond there.", color=EMBED_COLORS["warning"]),
+                ephemeral=True
+            )
+            return
+
+        bot.db.setdefault("tickets", {})[uid] = {
+            "type": "serious",
+            "notes": [],
+            "created_at": datetime.now().isoformat(),
+            "source": "interview_fail"
+        }
+        save_data(bot.db)
+
+        if STAFF_CHANNEL_ID:
+            ch = await safe_get_channel(STAFF_CHANNEL_ID)
+            if ch:
+                await ch.send(
+                    embed=create_embed(
+                        "🚨 Interview Escalation",
+                        f"{interaction.user.mention} failed screening and requested human assistance.",
+                        color=EMBED_COLORS["warning"]
+                    )
+                )
+
+        await interaction.response.send_message(
+            embed=create_embed("Ticket Opened", "Human review requested. Staff will reach out.", color=EMBED_COLORS["info"]),
+            ephemeral=True
+        )
+        self.stop()
 
     @discord.ui.button(label="Ping Staff", style=discord.ButtonStyle.green, custom_id="ping_staff")
     async def ping_staff(self, interaction: discord.Interaction, button: Button):
@@ -2474,7 +2575,10 @@ async def on_message(message):
                         f"Score: {score_total}/10. You failed screening.",
                         color=EMBED_COLORS["error"]
                     )
-                    await message.author.send(embed=outcome_embed)
+                    try:
+                        await message.author.send(embed=outcome_embed, view=InterviewFailView(message.author.id))
+                    except Exception as e:
+                        await log_error(f"interview fail dm: {str(e)}")
                     return
 
                 if score_total <= 6:
