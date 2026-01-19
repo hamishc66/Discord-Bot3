@@ -911,8 +911,10 @@ INTERVIEW_QUESTIONS = [
 async def score_interview_answer(question: str, answer: str) -> int:
     """Use the concise AI to score an answer (0/1). Falls back to heuristics on failure."""
     prompt = (
-        "You are the Nimbror Watcher. Evaluate an interview answer. "
-        "Return only '1' for acceptable/cooperative and '0' for evasive, hostile, or off-topic. "
+        "You are the Nimbror Watcher evaluating interview answers. "
+        "Return only '1' when the answer is clear, cooperative, respectful, relevant, and addresses the question directly (mention NSC when asked). "
+        "Return '0' for jokes, hostility, evasions, off-topic, or unsafe intent. "
+        "Keep it deterministic: just a single digit 1 or 0. "
         f"Question: {question}\nAnswer: {answer}"
     )
     try:
@@ -2467,11 +2469,18 @@ async def on_member_join(member):
             "questions": INTERVIEW_QUESTIONS
         }
         save_data(bot.db)
+        goals = (
+            "Interview goals:\n"
+            "• Answer directly and respectfully (1-3 sentences).\n"
+            "• Stay on-topic; mention NSC when asked.\n"
+            "• No jokes, hostility, or evasions.\n"
+            "• Honesty over flattery; be concise."
+        )
         await safe_send_dm(
             member,
             embed=create_embed(
                 "👁️ SCREENING",
-                f"Q1/10: {INTERVIEW_QUESTIONS[0]}"
+                f"{goals}\n\nQ1/10: {INTERVIEW_QUESTIONS[0]}"
             )
         )
     except Exception as e:
