@@ -1407,7 +1407,10 @@ async def trial(interaction: discord.Interaction):
         f"{dilemma['text']}\n\n*React with 🅰️ or 🅱️ to vote. Voting closes in 2 minutes. Minority loses 5 credit.*",
         color=0x9900ff
     )
-    msg = await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
+    
+    # Get the actual message object for reactions
+    msg = await interaction.original_response()
     
     # Store message ID for reaction tracking
     bot.db["trials"][trial_id]["message_id"] = msg.id
