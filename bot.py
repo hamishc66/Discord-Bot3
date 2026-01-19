@@ -2476,6 +2476,9 @@ async def on_message(message):
 
     except Exception as e:
         await log_error(f"on_message: {type(e).__name__}: {str(e)[:200]}")
+    
+    # CRITICAL: Allow slash commands to process
+    await bot.process_commands(message)
 
 # --- RUN ---
 try:
