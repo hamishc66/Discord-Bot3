@@ -14,6 +14,7 @@ from datetime import timedelta, datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from typing import Optional
+from supabase import create_client, Client
 
 load_dotenv()
 
@@ -25,6 +26,8 @@ STAFF_CHANNEL_ID = os.getenv("STAFF_CHANNEL_ID")
 VERIFIED_ROLE_ID = os.getenv("VERIFIED_ROLE_ID")
 ERROR_LOG_ID = os.getenv("ERROR_LOG_CHANNEL_ID")
 ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
@@ -32,6 +35,12 @@ if not TOKEN:
 if not AI_API_KEY:
     print("❌ AI_API_KEY not set")
     exit(1)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("❌ SUPABASE_URL or SUPABASE_KEY not set")
+    exit(1)
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def to_int(val):
     try:
@@ -58,6 +67,7 @@ START_TIME = time.time()
 LAST_SOCIAL_EVENT = None
 LAST_SOCIAL_EVENT_TIME = None
 CORRUPTION_MODE_ACTIVE = False
+LAST_CORRUPTION_STATE = False  # Track state transitions
 
 # --- KOYEB HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -80,37 +90,108 @@ def run_health_check():
 
 threading.Thread(target=run_health_check, daemon=True).start()
 
-# --- STORAGE ---
-DATA_FILE = "memory.json"
-
+# --- SUPABASE STORAGE ---
 def load_data():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-        except Exception as e:
-            print(f"❌ Load error: {e}")
-    return {
-        "tickets": {},
-        "interviews": {},
-        "memory": {},
-        "social_credit": {},
-        "last_quest_time": 0,
-        "completed_quests": {},
-        "incidents": [],
-        "trials": {},
-        "tasks": {},
-        "infraction_log": {}
-    }
+    """Load bot state from Supabase."""
+    try:
+        response = supabase.table("bot_state").select("*").eq("id", 1).execute()
+        
+        if response.data and len(response.data) > 0:
+            row = response.data[0]
+            # Reconstruct bot.db from Supabase columns
+            return {
+                "tickets": row.get("tickets", {}),
+                "interviews": row.get("interviews", {}),
+                "memory": row.get("memory", {}),
+                "social_credit": row.get("social_credit", {}),
+                "last_message_time": row.get("last_message_time", {}),
+                "last_quest_time": row.get("last_quest_time", 0),
+                "completed_quests": row.get("completed_quests", {}),
+                "incidents": row.get("incidents", []),
+                "trials": row.get("trials", {}),
+                "tasks": row.get("tasks", {}),
+                "infraction_log": row.get("infraction_log", {}),
+                "credit_log": row.get("credit_log", []),
+                "announcement_log": row.get("announcement_log", [])
+            }
+        else:
+            # No data exists yet, create initial row
+            initial_data = {
+                "id": 1,
+                "tickets": {},
+                "interviews": {},
+                "memory": {},
+                "social_credit": {},
+                "last_message_time": {},
+                "last_quest_time": 0,
+                "completed_quests": {},
+                "incidents": [],
+                "trials": {},
+                "tasks": {},
+                "infraction_log": {},
+                "credit_log": [],
+                "announcement_log": []
+            }
+            supabase.table("bot_state").insert(initial_data).execute()
+            print("🆕 Created initial Supabase row")
+            return {
+                "tickets": {},
+                "interviews": {},
+                "memory": {},
+                "social_credit": {},
+                "last_message_time": {},
+                "last_quest_time": 0,
+                "completed_quests": {},
+                "incidents": [],
+                "trials": {},
+                "tasks": {},
+                "infraction_log": {},
+                "credit_log": [],
+                "announcement_log": []
+            }
+    except Exception as e:
+        print(f"❌ Supabase load error: {e}")
+        # Fallback to empty state
+        return {
+            "tickets": {},
+            "interviews": {},
+            "memory": {},
+            "social_credit": {},
+            "last_message_time": {},
+            "last_quest_time": 0,
+            "completed_quests": {},
+            "incidents": [],
+            "trials": {},
+            "tasks": {},
+            "infraction_log": {},
+            "credit_log": [],
+            "announcement_log": []
+        }
 
 def save_data(data):
+    """Save bot state to Supabase."""
     try:
-        with open(DATA_FILE, "w") as f:
-            json.dump(data, f, indent=4)
+        # Prepare update payload with all fields
+        update_payload = {
+            "tickets": data.get("tickets", {}),
+            "interviews": data.get("interviews", {}),
+            "memory": data.get("memory", {}),
+            "social_credit": data.get("social_credit", {}),
+            "last_message_time": data.get("last_message_time", {}),
+            "last_quest_time": data.get("last_quest_time", 0),
+            "completed_quests": data.get("completed_quests", {}),
+            "incidents": data.get("incidents", []),
+            "trials": data.get("trials", {}),
+            "tasks": data.get("tasks", {}),
+            "infraction_log": data.get("infraction_log", {}),
+            "credit_log": data.get("credit_log", []),
+            "announcement_log": data.get("announcement_log", [])
+        }
+        
+        # Upsert to Supabase (update if exists, insert if not)
+        supabase.table("bot_state").update(update_payload).eq("id", 1).execute()
     except Exception as e:
-        print(f"❌ Save error: {e}")
+        print(f"❌ Supabase save error: {e}")
 
 # --- AI CALL (OpenRouter) ---
 LORE_CONTEXT = (
@@ -173,6 +254,8 @@ class MyBot(discord.Client):
             self.daily_quest_loop.start()
             self.quest_timeout_check.start()
             self.dynamic_social_credit_events.start()
+            self.trial_timeout_check.start()
+            self.corruption_monitor.start()
         except Exception as e:
             print(f"⚠️ Command sync failed: {e}")
 
@@ -270,22 +353,40 @@ class MyBot(discord.Client):
         try:
             global LAST_SOCIAL_EVENT, LAST_SOCIAL_EVENT_TIME
             
+            current_time = time.time()
+            activity_threshold = 86400  # 24 hours of inactivity
+            
             events = [
-                ("📉 **ECONOMIC CORRECTION** — All citizens −2 social credit", -2),
-                ("📈 **PRODUCTIVITY SPIKE** — Active users +3 social credit", 3),
-                ("⚠️ **SUSPICIOUS SILENCE** — Inactive users −1 social credit", -1),
-                ("🎉 **CELEBRATION** — Everyone +1 social credit", 1),
-                ("🔴 **CRITICAL ALERT** — Compliance failures −5 social credit", -5),
+                ("📉 **ECONOMIC CORRECTION** — All citizens −2 social credit", -2, "all"),
+                ("📈 **PRODUCTIVITY SPIKE** — Active users +3 social credit", 3, "active"),
+                ("⚠️ **SUSPICIOUS SILENCE** — Inactive users −1 social credit", -1, "inactive"),
+                ("🎉 **CELEBRATION** — Everyone +1 social credit", 1, "all"),
+                ("🔴 **CRITICAL ALERT** — Compliance failures −5 social credit", -5, "all"),
             ]
-            event_text, modifier = random.choice(events)
+            event_text, modifier, filter_type = random.choice(events)
             
             # Track event
             LAST_SOCIAL_EVENT = event_text
             LAST_SOCIAL_EVENT_TIME = datetime.now().isoformat()
             
-            # Apply modifier to all users
+            # Apply modifier based on filter
+            affected_count = 0
             for uid in self.db.get("social_credit", {}).keys():
-                self.db["social_credit"][uid] += modifier
+                should_apply = False
+                
+                if filter_type == "all":
+                    should_apply = True
+                elif filter_type == "active":
+                    last_msg = self.db.get("last_message_time", {}).get(uid, 0)
+                    should_apply = (current_time - last_msg) < activity_threshold
+                elif filter_type == "inactive":
+                    last_msg = self.db.get("last_message_time", {}).get(uid, 0)
+                    should_apply = (current_time - last_msg) >= activity_threshold or last_msg == 0
+                
+                if should_apply:
+                    update_social_credit(uid, modifier, f"global_event:{filter_type}")
+                    affected_count += 1
+            
             save_data(self.db)
             
             # Announce to channel
@@ -293,12 +394,71 @@ class MyBot(discord.Client):
                 try:
                     ch = self.get_channel(ANNOUNCE_CHANNEL_ID)
                     if ch:
-                        embed = create_embed("🌍 GLOBAL EVENT", event_text, color=0xff00ff)
+                        embed = create_embed("🌍 GLOBAL EVENT", f"{event_text}\n\n**Citizens Affected:** `{affected_count}`", color=0xff00ff)
                         await ch.send(embed=embed)
                 except:
                     pass
         except Exception as e:
             await log_error(f"dynamic_social_credit_events: {traceback.format_exc()}")
+    
+    @tasks.loop(minutes=1)
+    async def trial_timeout_check(self):
+        """Check for trials that have expired and close them."""
+        try:
+            current_time = time.time()
+            trial_duration = 120  # 2 minutes
+            
+            for trial_id, trial_data in list(self.db.get("trials", {}).items()):
+                if not trial_data.get("closed"):
+                    if current_time - trial_data.get("timestamp", 0) > trial_duration:
+                        # Trial has expired - process results
+                        await process_trial_results(trial_id, trial_data, self)
+                        trial_data["closed"] = True
+                        save_data(self.db)
+        except Exception as e:
+            await log_error(f"trial_timeout_check: {traceback.format_exc()}")
+    
+    @tasks.loop(minutes=5)
+    async def corruption_monitor(self):
+        """Monitor corruption mode and announce transitions."""
+        try:
+            global CORRUPTION_MODE_ACTIVE, LAST_CORRUPTION_STATE
+            
+            corruption_now = should_enable_corruption()
+            
+            # Transition detected
+            if corruption_now != LAST_CORRUPTION_STATE:
+                LAST_CORRUPTION_STATE = corruption_now
+                
+                if ANNOUNCE_CHANNEL_ID:
+                    try:
+                        ch = self.get_channel(ANNOUNCE_CHANNEL_ID)
+                        if ch and corruption_now:
+                            # Corruption ON
+                            embed = create_embed(
+                                "🔴 SYSTEM CRITICAL",
+                                "⚠️ **CORRUPTION MODE ACTIVATED**\n\n"
+                                "Average social credit has dropped critically low.\n"
+                                "All systems are experiencing signal degradation.\n"
+                                "Communications may become unstable.",
+                                color=0xff0000
+                            )
+                            await ch.send(embed=embed)
+                        elif ch and not corruption_now:
+                            # Corruption OFF
+                            embed = create_embed(
+                                "🟢 SYSTEM RECOVERY",
+                                "✅ **CORRUPTION MODE DEACTIVATED**\n\n"
+                                "System stability restored.\n"
+                                "Signal integrity nominal.\n"
+                                "Operations returning to normal.",
+                                color=0x00ff00
+                            )
+                            await ch.send(embed=embed)
+                    except Exception as e:
+                        print(f"⚠️ Corruption announcement error: {e}")
+        except Exception as e:
+            await log_error(f"corruption_monitor: {traceback.format_exc()}")
 
 bot = MyBot()
 
@@ -321,9 +481,26 @@ async def log_error(msg):
     except Exception as e:
         print(f"❌ Log error: {e}")
 
-def update_social_credit(user_id: str, amount: int):
-    """Update social credit score for a user."""
-    bot.db.setdefault("social_credit", {})[user_id] = bot.db.get("social_credit", {}).get(user_id, 0) + amount
+def update_social_credit(user_id: str, amount: int, reason: str = "system"):
+    """Update social credit score for a user with logging."""
+    old_score = bot.db.get("social_credit", {}).get(user_id, 0)
+    new_score = old_score + amount
+    bot.db.setdefault("social_credit", {})[user_id] = new_score
+    
+    # Log the change
+    bot.db.setdefault("credit_log", []).append({
+        "user_id": user_id,
+        "old_score": old_score,
+        "new_score": new_score,
+        "change": amount,
+        "reason": reason,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Keep only last 1000 log entries
+    if len(bot.db["credit_log"]) > 1000:
+        bot.db["credit_log"] = bot.db["credit_log"][-1000:]
+    
     save_data(bot.db)
 
 def add_memory(user_id: str, interaction_type: str, data: str):
@@ -336,22 +513,30 @@ def add_memory(user_id: str, interaction_type: str, data: str):
     save_data(bot.db)
 
 def check_data_health():
-    """Check data file integrity and return health status"""
+    """Check Supabase data integrity and return health status"""
     try:
-        with open("memory.json", "r") as f:
-            data = json.load(f)
-        size = os.path.getsize("memory.json")
-        record_count = sum([len(data.get("social_credit", {})), len(data.get("memory", {})), len(data.get("tickets", {}))])
-        return {
-            "status": "✅ Healthy",
-            "size_kb": round(size / 1024, 2),
-            "records": record_count,
-            "readable": True
-        }
-    except FileNotFoundError:
-        return {"status": "⚠️ Not Created", "size_kb": 0, "records": 0, "readable": False}
-    except json.JSONDecodeError:
-        return {"status": "🔴 Corrupted", "size_kb": 0, "records": 0, "readable": False}
+        response = supabase.table("bot_state").select("*").eq("id", 1).execute()
+        if response.data and len(response.data) > 0:
+            row = response.data[0]
+            # Count total records across all collections
+            record_count = sum([
+                len(row.get("social_credit", {})),
+                len(row.get("memory", {})),
+                len(row.get("tickets", {})),
+                len(row.get("trials", {})),
+                len(row.get("tasks", {}))
+            ])
+            # Estimate size (approximate)
+            data_str = json.dumps(row)
+            size_kb = len(data_str.encode('utf-8')) / 1024
+            return {
+                "status": "✅ Healthy (Supabase)",
+                "size_kb": round(size_kb, 2),
+                "records": record_count,
+                "readable": True
+            }
+        else:
+            return {"status": "⚠️ No Data", "size_kb": 0, "records": 0, "readable": False}
     except Exception as e:
         return {"status": f"❌ Error: {str(e)[:20]}", "size_kb": 0, "records": 0, "readable": False}
 
@@ -410,6 +595,60 @@ def should_enable_corruption() -> bool:
     # Enable corruption if average drops below 10
     CORRUPTION_MODE_ACTIVE = average < 10
     return CORRUPTION_MODE_ACTIVE
+
+async def process_trial_results(trial_id: str, trial_data: dict, bot_instance) -> None:
+    """Process trial results and apply penalties to minority."""
+    try:
+        votes_a = trial_data.get("votes_a", [])
+        votes_b = trial_data.get("votes_b", [])
+        
+        # Need at least 2 people voting
+        if len(votes_a) + len(votes_b) < 2:
+            return
+        
+        # Determine minority
+        if len(votes_a) == len(votes_b):
+            # Tie - punish both
+            minority = list(set(votes_a + votes_b))
+            result_text = "⚖️ **DEADLOCK** — Both sides tied. All voters lose 3 credit."
+            penalty = 3
+        elif len(votes_a) < len(votes_b):
+            # A is minority
+            minority = votes_a
+            result_text = f"🔴 **VOTE RESULT** — Minority wins. {len(votes_a)} lost souls surrender 5 credit."
+            penalty = 5
+        else:
+            # B is minority
+            minority = votes_b
+            result_text = f"🔴 **VOTE RESULT** — Minority yields. {len(votes_b)} lost souls surrender 5 credit."
+            penalty = 5
+        
+        # Apply penalties with reason
+        for uid in minority:
+            update_social_credit(uid, -penalty, f"trial_minority:{trial_id[:20]}")
+        
+        save_data(bot_instance.db)
+        
+        # Announce in BOTH the trial channel and ANNOUNCE_CHANNEL_ID
+        for announce_ch_id in [trial_data.get("channel_id"), ANNOUNCE_CHANNEL_ID]:
+            if announce_ch_id:
+                try:
+                    ch = bot_instance.get_channel(announce_ch_id)
+                    if ch:
+                        embed = create_embed(
+                            "⚖️ TRIAL CONCLUDED",
+                            f"{result_text}\n\n"
+                            f"**Vote Tally:**\n"
+                            f"🅰️ {len(votes_a)} votes\n"
+                            f"🅱️ {len(votes_b)} votes\n\n"
+                            f"*Minority loses {penalty} social credit.*",
+                            color=0x9900ff
+                        )
+                        await ch.send(embed=embed)
+                except Exception as e:
+                    print(f"⚠️ Trial announcement error: {e}")
+    except Exception as e:
+        await log_error(f"process_trial_results: {traceback.format_exc()}")
 
 # --- Ticket UI Components ---
 class TicketTypeSelect(View):
@@ -529,11 +768,82 @@ class TicketView(View):
                 pass
         await interaction.response.send_message("✅ Staff pinged.", ephemeral=True)
 
+# --- RESPONSE CLAMPING ---
+def clamp_response(text: str, max_chars: int = 500) -> str:
+    """Hard limit response length to prevent walls of text."""
+    text = text.strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit(" ", 1)[0] + "…"
+    return text
+
+# --- CONCISE AI MODE ---
+async def run_huggingface_concise(prompt: str) -> str:
+    """Call OpenRouter API with strict constraints for ping replies."""
+    try:
+        loop = asyncio.get_running_loop()
+        def call():
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+            
+            payload = {
+                "model": AI_MODEL,
+                "messages": [
+                    {"role": "system", "content": "You are a Discord bot. When mentioned directly, respond in plain text only—no markdown, emojis, or formatting. Keep it brief: 2-4 short sentences max. No paragraphs, no lists, no explanations unless asked. Be casual and direct."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 120
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"].strip()
+        return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
+    except Exception as e:
+        print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+        return "[SIGNAL LOST]"
+
 # --- COMMANDS ---
 @bot.tree.command(name="help", description="List all Watcher commands")
 async def help_cmd(interaction: discord.Interaction):
-    cmds = "👁️ **GENERAL**\n`/intel`, `/ticket`\n\n🛡️ **ADMIN**\n`/icewall`, `/purge`, `/debug`"
-    await interaction.response.send_message(embed=create_embed("📜 DIRECTORY", cmds))
+    cmds = (
+        "👁️ **SURVEILLANCE & INTEL**\n"
+        "`/intel` — Classified information\n"
+        "`/watchlist` — View citizens under observation\n"
+        "`/dossier @user` — Generate classified file\n"
+        "`/pingwatcher` — Check bot latency\n\n"
+        
+        "🎫 **REPORTS & ISSUES**\n"
+        "`/ticket` — File a secure issue (serious/general)\n"
+        "`/incident @user reason` — Report suspicious behavior\n"
+        "`/confess confession` — Confess to the Watcher\n\n"
+        
+        "⚖️ **CITIZEN SYSTEM**\n"
+        "`/socialcredit [mode] [@user]` — View scores/leaderboard/history\n"
+        "`/trial` — Moral dilemma voting (2 min)\n"
+        "`/task` — Receive a micro-quest\n"
+        "`/status` — System health report\n\n"
+        
+        "💳 **SOCIAL CREDIT TIERS**\n"
+        "🟢 **Trusted Asset** (80+) — Full access, exemplary citizen\n"
+        "🟡 **Compliant Citizen** (30-79) — Full access, standard standing\n"
+        "🟠 **Under Observation** (0-29) — Cannot use `/trial`\n"
+        "🔴 **Liability** (<0) — Cannot use `/ticket`, `/confess`, `/trial`\n\n"
+        
+        "🎲 **ATMOSPHERE**\n"
+        "`/prophecy` — Receive an ominous prediction\n\n"
+        
+        "🛡️ **ADMIN ONLY**\n"
+        "`/icewall @user` — 10m timeout\n"
+        "`/purge [amount]` — Delete messages\n"
+        "`/debug` — System check\n"
+        "`/restart` — Fake system restart\n"
+        "`/notes @user` — View staff ticket notes\n"
+        "`/memory [view/clear] @user` — Manage AI memory\n"
+        "`/json [section]` — View database\n"
+    )
+    embed = create_embed("📜 WATCHER COMMAND DIRECTORY", cmds, color=0x00ffff)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="intel", description="Classified info")
 async def intel(interaction: discord.Interaction):
@@ -555,6 +865,16 @@ async def icewall(interaction: discord.Interaction, member: discord.Member):
 @bot.tree.command(name="ticket", description="Secure link")
 async def ticket(interaction: discord.Interaction):
     """Open a new ticket with severity selection."""
+    uid = str(interaction.user.id)
+    
+    # Check privilege
+    if not can_access_feature(uid, "ticket"):
+        await interaction.response.send_message(
+            embed=create_embed("🔴 ACCESS DENIED", "Your privilege level does not permit filing tickets.", color=0xff0000),
+            ephemeral=True
+        )
+        return
+    
     view = TicketTypeSelect(interaction.user.id)
     embed = create_embed(
         "👁️ SELECT ISSUE TYPE",
@@ -580,6 +900,45 @@ async def purge(interaction: discord.Interaction, amount: int):
 async def debug(interaction: discord.Interaction):
     status = f"🟢 Online\n👥 Tickets: {len(bot.db.get('tickets',{}))}\n⏳ Interviews: {len(bot.db.get('interviews',{}))}\n🧠 Memory Entries: {len(bot.db.get('memory',{}))}\n💳 Social Scores: {len(bot.db.get('social_credit',{}))}"
     await interaction.response.send_message(embed=create_embed("⚙️ DEBUG", status), ephemeral=True)
+
+@bot.tree.command(name="restart", description="Restart the system (admin only)")
+@app_commands.checks.has_permissions(administrator=True)
+async def restart(interaction: discord.Interaction):
+    """Show a satisfying fake restart progress bar."""
+    await interaction.response.defer()
+    
+    progress_stages = [
+        ("🟡 [░░░░░░░░░░] 0% — SHUTDOWN INITIATED", 0.2),
+        ("🟡 [██░░░░░░░░] 10% — FLUSHING BUFFERS", 0.15),
+        ("🟡 [████░░░░░░] 25% — SAVING STATE", 0.15),
+        ("🟡 [██████░░░░] 40% — CLEARING CACHE", 0.15),
+        ("🟡 [████████░░] 60% — REINITIALIZING CORE", 0.15),
+        ("🟡 [█████████░] 85% — LOADING PROTOCOLS", 0.15),
+        ("🟢 [██████████] 100% — SYSTEM ONLINE", 0.2),
+    ]
+    
+    restart_embed = discord.Embed(
+        title="⚡ EMERGENCY SYSTEM RESTART",
+        description="REBOOTING SURVEILLANCE ARRAYS...",
+        color=0xff9900
+    )
+    restart_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    
+    msg = await interaction.followup.send(embed=restart_embed)
+    
+    for stage, delay in progress_stages:
+        await asyncio.sleep(delay)
+        restart_embed.description = stage
+        await msg.edit(embed=restart_embed)
+    
+    await asyncio.sleep(0.3)
+    final_embed = discord.Embed(
+        title="✅ RESTART COMPLETE",
+        description="🛰️ All systems nominal.\n✨ Ready to observe.\n⚠️ Remember: I was watching the whole time.",
+        color=0x00ff00
+    )
+    final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SENSOR-NET")
+    await msg.edit(embed=final_embed)
 
 @bot.tree.command(name="notes", description="View staff notes for a user")
 @app_commands.checks.has_permissions(manage_messages=True)
@@ -853,23 +1212,38 @@ async def prophecy(interaction: discord.Interaction):
 @bot.tree.command(name="confess", description="Confess your sins to the Watcher")
 async def confess(interaction: discord.Interaction, confession: str):
     """Confess a wrongdoing. The Watcher judges."""
-    judgments = [
-        "✅ Honesty noted. +5 social credit.",
-        "❌ Pathetic. -10 social credit.",
-        "🤔 Interesting. Nothing changes.",
-        "⚠️ This will be recorded.",
-        "😈 I appreciate the entertainment. No reward.",
-    ]
     uid = str(interaction.user.id)
-    judgment = random.choice(judgments)
     
-    # Random credit change
-    if "+5" in judgment:
-        update_social_credit(uid, 5)
-    elif "-10" in judgment:
-        update_social_credit(uid, -10)
+    # Check privilege
+    if not can_access_feature(uid, "confess"):
+        await interaction.response.send_message(
+            embed=create_embed("🔴 ACCESS DENIED", "Your liability status prevents confession.", color=0xff0000),
+            ephemeral=True
+        )
+        return
     
-    embed = create_embed("🧾 CONFESSION JUDGED", f"*\"{confession}\"*\n\n**Verdict:** {judgment}", color=0xff6600)
+    judgments = [
+        ("✅ Honesty noted.", 5),
+        ("❌ Pathetic.", -10),
+        ("🤔 Interesting. Nothing changes.", 0),
+        ("⚠️ This will be recorded.", 0),
+        ("😈 I appreciate the entertainment.", 0),
+    ]
+    
+    judgment_text, credit_change = random.choice(judgments)
+    
+    # Apply credit change with reason
+    update_social_credit(uid, credit_change, f"confess:{confession[:50]}")
+    
+    credit_text = ""
+    if credit_change > 0:
+        credit_text = f" `+{credit_change}` social credit"
+    elif credit_change < 0:
+        credit_text = f" `{credit_change}` social credit"
+    else:
+        credit_text = " No change."
+    
+    embed = create_embed("🧾 CONFESSION JUDGED", f"*\"{confession}\"*\n\n**Verdict:** {judgment_text}{credit_text}", color=0xff6600)
     await interaction.response.send_message(embed=embed, ephemeral=False)
 
 def get_citizen_tier(score: int) -> tuple:
@@ -1014,23 +1388,30 @@ async def trial(interaction: discord.Interaction):
     ]
     
     dilemma = random.choice(dilemmas)
-    trial_id = f"trial_{interaction.user.id}_{int(time.time())}"
+    trial_id = f"trial_{int(time.time())}_{random.randint(1000, 9999)}"
     
-    # Store trial data
+    # Store trial data with message info for later lookup
     bot.db.setdefault("trials", {})[trial_id] = {
-        "participants": [],
+        "dilemma": dilemma['text'],
         "votes_a": [],
         "votes_b": [],
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "closed": False,
+        "message_id": None,
+        "channel_id": interaction.channel_id
     }
     save_data(bot.db)
     
     embed = create_embed(
         "⚖️ MORAL TRIAL",
-        f"{dilemma['text']}\n\n*React with A or B to vote. Minority loses 5 credit.*",
+        f"{dilemma['text']}\n\n*React with 🅰️ or 🅱️ to vote. Voting closes in 2 minutes. Minority loses 5 credit.*",
         color=0x9900ff
     )
     msg = await interaction.response.send_message(embed=embed)
+    
+    # Store message ID for reaction tracking
+    bot.db["trials"][trial_id]["message_id"] = msg.id
+    save_data(bot.db)
     
     # Add emoji reactions
     await msg.add_reaction("🅰️")
@@ -1173,10 +1554,69 @@ async def on_member_join(member):
         print(f"⚠️ Cannot DM {member}")
 
 @bot.event
+async def on_reaction_add(reaction, user):
+    """Track trial votes when users react to trial messages."""
+    if user.bot:
+        return
+    
+    try:
+        # Check if this is a trial message
+        for trial_id, trial_data in bot.db.get("trials", {}).items():
+            if trial_data.get("message_id") == reaction.message.id and not trial_data.get("closed"):
+                uid = str(user.id)
+                
+                # Register vote based on emoji
+                if reaction.emoji == "🅰️":
+                    if uid not in trial_data["votes_a"]:
+                        trial_data["votes_a"].append(uid)
+                    # Remove from other vote if they changed their vote
+                    if uid in trial_data["votes_b"]:
+                        trial_data["votes_b"].remove(uid)
+                
+                elif reaction.emoji == "🅱️":
+                    if uid not in trial_data["votes_b"]:
+                        trial_data["votes_b"].append(uid)
+                    # Remove from other vote if they changed their vote
+                    if uid in trial_data["votes_a"]:
+                        trial_data["votes_a"].remove(uid)
+                
+                save_data(bot.db)
+                break
+    except Exception as e:
+        print(f"⚠️ on_reaction_add error: {e}")
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    """Handle vote removal when users remove their reaction."""
+    if user.bot:
+        return
+    
+    try:
+        # Check if this is a trial message
+        for trial_id, trial_data in bot.db.get("trials", {}).items():
+            if trial_data.get("message_id") == reaction.message.id and not trial_data.get("closed"):
+                uid = str(user.id)
+                
+                # Remove vote based on emoji
+                if reaction.emoji == "🅰️" and uid in trial_data["votes_a"]:
+                    trial_data["votes_a"].remove(uid)
+                
+                elif reaction.emoji == "🅱️" and uid in trial_data["votes_b"]:
+                    trial_data["votes_b"].remove(uid)
+                
+                save_data(bot.db)
+                break
+    except Exception as e:
+        print(f"⚠️ on_reaction_remove error: {e}")
+
+@bot.event
 async def on_message(message):
     if message.author.bot:
         return
     uid = str(message.author.id)
+    
+    # Track activity
+    bot.db.setdefault("last_message_time", {})[uid] = time.time()
 
     try:
         # --- Interview ---
@@ -1284,22 +1724,20 @@ async def on_message(message):
                 return
             AI_COOLDOWN[uid_mention] = now
             async with message.channel.typing():
-                ai_response = await run_huggingface(
-                    f"{LORE_CONTEXT}\n"
-                    f"AI Memory: {bot.db.get('memory', {}).get(uid_mention, {})}\n"
-                    f"User says: {message.content[:500]}"
+                # Use CONCISE mode for pings - strict constraints (max 120 tokens, plain text only)
+                ai_response = await run_huggingface_concise(
+                    f"User (in a Discord server called Nimbror) says: {message.content[:200]}"
                 )
                 
-                # Apply corruption if corruption mode is active
-                if should_enable_corruption():
-                    ai_response = corrupt_message(ai_response)
+                # Hard clamp response length to prevent rambling
+                ai_response = clamp_response(ai_response, max_chars=500)
                 
                 # Store memory and give engagement bonus
                 add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
                 update_social_credit(uid_mention, 1)
                 
-                embed = create_embed("🛰️ WATCHER RESPONSE", ai_response[:1900])
-                await message.reply(embed=embed)
+                # Send as plain reply (feels more like conversation, less formal than embeds)
+                await message.reply(ai_response)
 
     except Exception as e:
         await log_error(f"on_message: {type(e).__name__}: {str(e)[:200]}")
