@@ -89,6 +89,9 @@ ERROR_LOG_COOLDOWN_DURATION = 5
 GLOBAL_COMMAND_COOLDOWN = {}
 GLOBAL_COMMAND_COOLDOWN_DURATION = 3
 
+# Track whether app commands have been synced to Discord (prevents double-sync on reconnects)
+COMMANDS_SYNCED = False
+
 # RATE LIMIT SAFETY: AI call semaphore (max 2 concurrent AI requests globally)
 AI_SEMAPHORE = None  # Initialized in MyBot.__init__
 
@@ -224,6 +227,50 @@ def load_data():
             "announcement_log": []
         }
 
+def coerce_list(value):
+    """Ensure value is a list; gracefully handle dict/None/iterables."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return list(value.values())
+    if value is None:
+        return []
+    try:
+        return list(value)
+    except Exception:
+        return []
+
+def normalize_db_shapes(db: dict) -> dict:
+    """Normalize bot.db collections to expected list/dict shapes to avoid attribute errors."""
+    db["incidents"] = coerce_list(db.get("incidents", []))
+    db["announcement_log"] = coerce_list(db.get("announcement_log", []))
+    
+    # Memory collections
+    for uid, mem in db.get("memory", {}).items():
+        mem["interactions"] = coerce_list(mem.get("interactions", []))
+        mem["preferences"] = coerce_list(mem.get("preferences", []))
+    
+    # Ticket notes
+    for uid, ticket in db.get("tickets", {}).items():
+        ticket["notes"] = coerce_list(ticket.get("notes", []))
+    
+    # Interview answers
+    for uid, interview in db.get("interviews", {}).items():
+        interview["answers"] = coerce_list(interview.get("answers", []))
+    
+    # Trial vote buckets
+    for trial_id, trial in db.get("trials", {}).items():
+        trial["votes_a"] = coerce_list(trial.get("votes_a", []))
+        trial["votes_b"] = coerce_list(trial.get("votes_b", []))
+    
+    # Infraction logs per user
+    if not isinstance(db.get("infraction_log"), dict):
+        db["infraction_log"] = {}
+    for uid, entries in db.get("infraction_log", {}).items():
+        db["infraction_log"][uid] = coerce_list(entries)
+    
+    return db
+
 def save_data(data):
     """Save bot state to Supabase with debouncing to prevent rate limiting."""
     global LAST_SAVE_TIME
@@ -318,7 +365,7 @@ class MyBot(discord.Client):
         intents.members = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.db = load_data()
+        self.db = normalize_db_shapes(load_data())
         
         # RATE LIMIT SAFETY: Initialize global AI semaphore (max 2 concurrent AI calls)
         global AI_SEMAPHORE, AI_REQUEST_QUEUE
@@ -335,7 +382,6 @@ class MyBot(discord.Client):
             self.dynamic_social_credit_events.start()
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
-            self.uptime_update_loop.start()
             self.internal_keepalive_loop.start()
         except Exception as e:
             print(f"⚠️ Command sync failed: {e}")
@@ -590,6 +636,7 @@ class MyBot(discord.Client):
             context = request.get("context", "unknown")
             created_at = request.get("created_at", time.time())
             retry_count = request.get("retry_count", 0)
+            placeholder_message_id = request.get("placeholder_message_id")
             
             # Check if request is too old (>2 minutes), discard it
             if (time.time() - created_at) > 120:
@@ -609,19 +656,28 @@ class MyBot(discord.Client):
                     if context == "ticket" and should_enable_corruption():
                         result = corrupt_message(result)
                     
-                    # Send result to channel
+                    # Send result to channel (or edit placeholder if available)
                     try:
                         channel = bot.get_channel(channel_id)
                         if channel and result:
-                            # Format based on context
+                            target_message = None
+                            if placeholder_message_id:
+                                try:
+                                    target_message = await channel.fetch_message(placeholder_message_id)
+                                except Exception:
+                                    target_message = None
                             if context == "ticket":
-                                # Send as embed for tickets
                                 embed = create_embed("🛰️ WATCHER RESPONSE", result[:1900], color=EMBED_COLORS["info"])
-                                await channel.send(embed=embed)
+                                if target_message:
+                                    await target_message.edit(embed=embed, content=None, allowed_mentions=discord.AllowedMentions.none())
+                                else:
+                                    await channel.send(embed=embed)
                             else:
-                                # Send as plain text for mentions
                                 result = clamp_response(result, max_chars=500)
-                                await channel.send(result[:2000], allowed_mentions=discord.AllowedMentions.none())
+                                if target_message:
+                                    await target_message.edit(content=result[:2000], embed=None, allowed_mentions=discord.AllowedMentions.none())
+                                else:
+                                    await channel.send(result[:2000], allowed_mentions=discord.AllowedMentions.none())
                     except Exception as e:
                         print(f"⚠️ Failed to send queued AI response: {e}")
                     
@@ -803,7 +859,7 @@ async def safe_send_dm(user: discord.User, embed: discord.Embed = None, content:
         print(f"⚠️ Cannot DM {user}")
         return False
 
-async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: str) -> tuple[bool, str]:
+async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: str, placeholder_message_id: Optional[int] = None) -> tuple[bool, str]:
     """
     QUEUE-BASED AI: Queue an AI request instead of executing immediately.
     Returns (success: bool, message: str)
@@ -834,7 +890,8 @@ async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: 
             "prompt": prompt,
             "context": context,
             "created_at": time.time(),
-            "retry_count": 0
+            "retry_count": 0,
+            "placeholder_message_id": placeholder_message_id,
         }
         
         AI_REQUEST_QUEUE.put_nowait(request)
@@ -1159,6 +1216,20 @@ async def update_user_credit(user_id: str, amount: int, reason: str = "system") 
         return True
     except Exception as e:
         await log_error(f"update_user_credit: {str(e)}")
+        return False
+
+async def set_user_credit(user_id: str, new_value: int, reason: str = "admin_edit") -> bool:
+    """Set user's social credit to an absolute value (floored at 0)."""
+    try:
+        await ensure_user_exists(user_id)
+        safe_value = max(0, int(new_value))
+        resp = supabase.table("users").update({"social_credit": safe_value}).eq("id", user_id).execute()
+        ensure_ok(resp, "users update")
+        bot.db.setdefault("social_credit", {})[user_id] = safe_value
+        save_data(bot.db)
+        return True
+    except Exception as e:
+        await log_error(f"set_user_credit: {str(e)}")
         return False
 
 async def get_shop_items() -> list:
@@ -2008,7 +2079,10 @@ async def help_cmd(interaction: discord.Interaction):
         "`/notes @user` — View staff ticket notes\n"
         "`/memory [view/clear] @user` — Manage AI memory\n"
         "`/memorydump [section]` — View database\n"
+        "`/creditscoreedit @user value` — Set a user's social credit\n"
         "`/announce` — Send Discohook JSON announcement with embeds/buttons\n"
+        "`/task` — Receive a micro-quest with reply-to-complete flow\n"
+        "`/questforce` — Force-send a quest to a random member (admin)\n"
     )
     embed = create_embed(
         "Commands",
@@ -2068,6 +2142,42 @@ async def purge(interaction: discord.Interaction, amount: int):
         await interaction.followup.send(f"🧹 Redacted {len(deleted)} messages.", ephemeral=True)
     except Exception as e:
         await log_error(traceback.format_exc())
+
+@bot.tree.command(name="creditscoreedit", description="[ADMIN] Set a user's social credit score")
+@app_commands.describe(user="Target user", score="New social credit value (0+)")
+async def creditscoreedit(interaction: discord.Interaction, user: discord.User, score: int):
+    owner_id = 765028951541940225
+    is_owner = interaction.user.id == owner_id
+    is_admin = getattr(interaction.user, "guild_permissions", None) and interaction.user.guild_permissions.administrator
+    if not (is_owner or is_admin):
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Administrator permission required.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    if score < 0:
+        score = 0
+    if score > 100000:
+        score = 100000
+    
+    await interaction.response.defer(ephemeral=True)
+    uid = str(user.id)
+    before = await get_user_credit(uid)
+    success = await set_user_credit(uid, score, reason="admin_edit")
+    if not success:
+        await interaction.followup.send(
+            embed=create_embed("❌ Update Failed", "Could not update social credit.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    after = await get_user_credit(uid)
+    embed = create_embed(
+        "✅ Credit Score Updated",
+        f"{user.mention} new credit: `{after}`\nPrevious: `{before}`",
+        color=EMBED_COLORS["success"]
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="debug", description="System check")
 async def debug(interaction: discord.Interaction):
@@ -2765,15 +2875,31 @@ async def confess(interaction: discord.Interaction, confession: str):
         )
         return
     
-    judgments = [
-        ("✅ Honesty noted.", 5),
-        ("❌ Pathetic.", -10),
-        ("🤔 Interesting. Nothing changes.", 0),
-        ("⚠️ This will be recorded.", 0),
-        ("😈 I appreciate the entertainment.", 0),
-    ]
+    lower_confession = confession.lower()
+    praise_keywords = ["watcher", "nimbror", "praise", "love", "loyal", "serve", "glory", "devote", "worship", "thank"]
+    exploit_keywords = ["free", "credit", "points", "exploit", "farm", "trick", "cheat", "hack", "please give"]
     
-    judgment_text, credit_change = random.choice(judgments)
+    is_praise = any(k in lower_confession for k in praise_keywords)
+    is_exploit = any(k in lower_confession for k in exploit_keywords)
+    
+    if is_praise and not is_exploit:
+        judgment_text = "🛐 Devotion detected. Tribute accepted."
+        credit_change = random.choice([5, 8, 10])
+    elif is_exploit and is_praise:
+        judgment_text = "😠 Transparent greed. Tribute denied."
+        credit_change = random.choice([-8, -10, -12])
+    else:
+        # Heavier bias toward credit change (positive or negative), fewer no-change outcomes
+        weighted_judgments = [
+            ("✅ Honesty rewarded.", 5, 3),
+            ("⚖️ Penance assigned.", -3, 2),
+            ("🔥 Confession accepted.", 2, 2),
+            ("❌ Condemned.", -8, 1),
+            ("😐 Recorded with minimal notice.", 0, 1),
+        ]
+        weights = [w for _, _, w in weighted_judgments]
+        idx = random.choices(range(len(weighted_judgments)), weights=weights, k=1)[0]
+        judgment_text, credit_change, _ = weighted_judgments[idx]
     
     # Apply credit change with reason
     update_social_credit(uid, credit_change, f"confess:{confession[:50]}")
@@ -2996,22 +3122,72 @@ async def task(interaction: discord.Interaction):
     chosen_task = random.choice(tasks_list)
     uid = str(interaction.user.id)
     task_id = f"task_{uid}_{int(time.time())}"
+    reward_points = 5  # Standardized reward for completions
     
     # Store task
     bot.db.setdefault("tasks", {})[task_id] = {
         "user_id": uid,
         "task": chosen_task["name"],
+        "desc": chosen_task["desc"],
+        "reward": reward_points,
         "timestamp": time.time(),
-        "completed": False
+        "completed": False,
+        "message_id": None,
+        "channel_id": None
     }
     save_data(bot.db)
     
     embed = create_embed(
         "Task Assigned",
-        f"**{chosen_task['name']}**\n{chosen_task['desc']}\n\nReward: +{chosen_task['reward']} credits",
+        f"**{chosen_task['name']}**\n{chosen_task['desc']}\n\nReward: +{reward_points} credits",
         color=EMBED_COLORS["info"]
     )
     await interaction.response.send_message(embed=embed)
+    try:
+        msg = await interaction.original_response()
+        bot.db["tasks"][task_id]["message_id"] = msg.id
+        bot.db["tasks"][task_id]["channel_id"] = msg.channel.id if hasattr(msg, "channel") else None
+        save_data(bot.db)
+    except Exception:
+        pass
+
+@bot.tree.command(name="questforce", description="[ADMIN] Force-send a quest to a random member")
+@app_commands.checks.has_permissions(administrator=True)
+async def questforce(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild or (bot.guilds[0] if bot.guilds else None)
+    if not guild:
+        await interaction.followup.send("❌ No guild context.", ephemeral=True)
+        return
+    members = [m for m in guild.members if not m.bot]
+    if not members:
+        await interaction.followup.send("❌ No eligible members found.", ephemeral=True)
+        return
+    quest_user = random.choice(members)
+    quests = [
+        "🔮 The Ice Wall is CRACKING. Find out what's on the other side before they seal it.",
+        "👁️ Three people near you are NOT who they say they are. IDENTIFY THEM.",
+        "📡 We intercepted a signal. It's... unsettling. Decode it. I dare you.",
+        "🗝️ The key is right in front of you. Stop being blind.",
+        "🌑 You saw something on [REDACTED]. You know what I mean. Report it.",
+        "👻 Elvis left a voicemail. Listen. Tell me what you heard.",
+        "❄️ The Wall is moving. THEY'RE BUILDING SOMETHING. Find out what.",
+        "💀 A message was left in your area. Find it before THEY do."
+    ]
+    quest = random.choice(quests)
+    quest_id = f"{int(time.time())}_{quest_user.id}"
+    bot.db.setdefault("completed_quests", {})[quest_id] = False
+    bot.db["last_quest_time"] = time.time()  # Maintain 12h cadence from latest dispatch
+    save_data(bot.db)
+    await safe_send_dm(quest_user, embed=create_embed("🔮 DAILY QUEST (FORCED)", quest, color=0xff00ff))
+    await interaction.followup.send(f"✅ Quest forced to {quest_user.mention}", ephemeral=True)
+    if STAFF_CHANNEL_ID:
+        try:
+            staff_ch = await safe_get_channel(STAFF_CHANNEL_ID)
+            if staff_ch:
+                await staff_ch.send(f"🔮 (Forced) Quest sent to {quest_user.mention}: {quest}")
+        except Exception:
+            pass
 
 @bot.tree.command(name="marry", description="Bind two souls together")
 async def marry(interaction: discord.Interaction, user1: discord.User, user2: discord.User):
@@ -3022,18 +3198,6 @@ async def marry(interaction: discord.Interaction, user1: discord.User, user2: di
             embed=create_embed(
                 "Invalid",
                 "A soul cannot bind itself.",
-                color=EMBED_COLORS["error"]
-            ),
-            ephemeral=True
-        )
-        return
-    
-    # Prevent bot marriage
-    if user1.bot or user2.bot:
-        await interaction.response.send_message(
-            embed=create_embed(
-                "Prohibited",
-                "Artificial entities cannot enter contract.",
                 color=EMBED_COLORS["error"]
             ),
             ephemeral=True
@@ -3317,8 +3481,8 @@ async def announce(
         
         # Send the announcement with WATCHER SAFETY
         try:
-            # RATE LIMIT SAFETY: Always suppress mentions
-            allowed_mentions = discord.AllowedMentions.none()
+            # RATE LIMIT SAFETY: Default suppress mentions unless explicitly allowed
+            allowed_mentions = discord.AllowedMentions.none() if silent else discord.AllowedMentions.all()
             
             sent_message = await channel.send(
                 content=content[:2000] if content else None,
@@ -3375,28 +3539,31 @@ async def announce(
 @bot.event
 async def on_ready():
     """Bot connected and ready."""
-    global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
+    global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID, COMMANDS_SYNCED
     
     if not bot.user:
         return
     
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
+
+    # Ensure app commands are synced (once per session)
+    if not COMMANDS_SYNCED:
+        try:
+            synced = await bot.tree.sync()
+            COMMANDS_SYNCED = True
+            print(f"✅ Commands synced: {len(synced)}")
+        except Exception as e:
+            print(f"⚠️ Command sync failed: {e}")
     
     # Start background tasks
     try:
-        if not bot.uptime_update_loop.is_running():
-            bot.uptime_update_loop.start()
         if not bot.internal_keepalive_loop.is_running():
             bot.internal_keepalive_loop.start()
         if not bot.corruption_monitor.is_running():
             bot.corruption_monitor.start()
         if not bot.trial_timeout_check.is_running():
             bot.trial_timeout_check.start()
-        if not bot.quest_reset_loop.is_running():
-            bot.quest_reset_loop.start()
-        if not bot.task_expiration_check.is_running():
-            bot.task_expiration_check.start()
         # QUEUE-BASED AI: Start AI queue processor
         if not bot.ai_queue_processor.is_running():
             bot.ai_queue_processor.start()
@@ -3422,12 +3589,6 @@ async def on_ready():
         embed.add_field(name="Status", value="Ready", inline=True)
         embed.set_footer(text=f"ID: {bot.user.id}")
         await channel.send(embed=embed)
-        
-        # Send uptime embed and store message ID for updates
-        uptime_embed = create_uptime_embed()
-        uptime_msg = await channel.send(embed=uptime_embed)
-        UPTIME_MESSAGE_ID = uptime_msg.id
-        UPTIME_CHANNEL_ID = channel.id
     except Exception as e:
         print(f"❌ Failed to send startup announcement: {e}")
 
@@ -3545,6 +3706,30 @@ async def on_message(message):
     bot.db.setdefault("last_message_time", {})[uid] = time.time()
 
     try:
+        # --- Task Completion via Reply ---
+        if message.reference and message.reference.message_id:
+            ref_id = message.reference.message_id
+            for task_id, task_data in list(bot.db.get("tasks", {}).items()):
+                if task_data.get("completed"):
+                    continue
+                if task_data.get("message_id") != ref_id:
+                    continue
+                if task_data.get("user_id") != uid:
+                    continue
+                # Mark complete and reward
+                task_data["completed"] = True
+                save_data(bot.db)
+                reward = int(task_data.get("reward", 5))
+                await update_user_credit(uid, reward, "task_complete")
+                credit_now = await get_user_credit(uid)
+                ack = create_embed(
+                    "✅ Task Completed",
+                    f"Reward applied: `+{reward}` social credit\nCurrent credit: `{credit_now}`",
+                    color=EMBED_COLORS["success"]
+                )
+                await message.channel.send(reference=message, embed=ack, allowed_mentions=discord.AllowedMentions.none())
+                break
+
         # --- Interview ---
         if isinstance(message.channel, discord.DMChannel) and uid in bot.db.get("interviews", {}):
             state = bot.db["interviews"].get(uid, {"index": 0, "score": 0, "questions": INTERVIEW_QUESTIONS})
@@ -3883,14 +4068,27 @@ async def on_message(message):
                 
                 prompt = f"Custom instructions: {custom_context}\nUser says: {message.content[:200]}"
                 
+                # If queue is busy, drop a placeholder and edit later
+                placeholder_id = None
+                if (AI_REQUEST_QUEUE and not AI_REQUEST_QUEUE.empty()) or AI_QUEUE_PROCESSOR_RUNNING:
+                    try:
+                        placeholder = await message.reply(
+                            "Sorry, please wait a moment, I will edit this message when I'm ready to answer",
+                            allowed_mentions=discord.AllowedMentions.none()
+                        )
+                        placeholder_id = placeholder.id
+                    except Exception:
+                        pass
+            
                 # QUEUE-BASED AI: Queue the request instead of executing immediately
                 success, status_msg = await queue_ai_request(
                     user_id=user_id,
                     channel_id=message.channel.id,
                     prompt=prompt,
-                    context="mention"
+                    context="mention",
+                    placeholder_message_id=placeholder_id
                 )
-                
+            
                 if success:
                     # Show queued status
                     async with message.channel.typing():
