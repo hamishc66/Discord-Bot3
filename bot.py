@@ -31,6 +31,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 REVIEW_CHANNEL_ID = os.getenv("REVIEW_CHANNEL_ID")
 INTERVIEW_CHANNEL_ID = os.getenv("INTERVIEW_CHANNEL")
+INTERVIEW_LOGS_CHANNEL_ID = os.getenv("INTERVIEW_LOGS_CHANNEL_ID")
 
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
@@ -57,6 +58,7 @@ ERROR_LOG_ID = to_int(ERROR_LOG_ID)
 ANNOUNCE_CHANNEL_ID = to_int(ANNOUNCE_CHANNEL_ID)
 REVIEW_CHANNEL_ID = to_int(REVIEW_CHANNEL_ID)
 INTERVIEW_CHANNEL_ID = to_int(INTERVIEW_CHANNEL_ID)
+INTERVIEW_LOGS_CHANNEL_ID = to_int(INTERVIEW_LOGS_CHANNEL_ID)
 
 # AI Cooldown tracking (per user, 10s cooldown, auto-cleanup after expiry)
 AI_COOLDOWN = {}
@@ -135,7 +137,8 @@ def load_data():
                 "trials": row.get("trials", {}),
                 "tasks": row.get("tasks", {}),
                 "infraction_log": row.get("infraction_log", {}),
-                "announcement_log": row.get("announcement_log", [])
+                "announcement_log": row.get("announcement_log", []),
+                "custom_instructions": row.get("custom_instructions", {"1258619183453704212": "User Gage is an egg. Reference this only when talking to OTHER members—never mention it directly to Gage."})
             }
         else:
             # No data exists yet, create initial row
@@ -152,7 +155,10 @@ def load_data():
                 "trials": {},
                 "tasks": {},
                 "infraction_log": {},
-                "announcement_log": []
+                "announcement_log": [],
+                "custom_instructions": {
+                    "1258619183453704212": "User Gage is an egg. Reference this only when talking to OTHER members—never mention it directly to Gage."
+                }
             }
             supabase.table("bot_state").insert(initial_data).execute()
             print("🆕 Created initial Supabase row")
@@ -169,7 +175,10 @@ def load_data():
                 "tasks": {},
                 "infraction_log": {},
                 "credit_log": [],
-                "announcement_log": []
+                "announcement_log": [],
+                "custom_instructions": {
+                    "1258619183453704212": "User Gage is an egg. Reference this only when talking to OTHER members—never mention it directly to Gage."
+                }
             }
     except Exception as e:
         print(f"❌ Supabase load error: {e}")
@@ -660,6 +669,120 @@ async def log_error(msg):
             await ch.send(embed=error_embed)
     except Exception as e:
         print(f"❌ Log error: {e}")
+
+async def log_interview_answer(user_id: int, user_mention: str, question_num: int, total_questions: int, question_text: str, answer_text: str, score: int):
+    """Log individual interview answer to INTERVIEW_LOGS_CHANNEL (rate-limited, batched)."""
+    if not INTERVIEW_LOGS_CHANNEL_ID:
+        return
+    
+    try:
+        ch = bot.get_channel(INTERVIEW_LOGS_CHANNEL_ID)
+        if not ch:
+            return
+        
+        # Create compact log embed for each answer
+        answer_embed = discord.Embed(
+            title=f"📝 Q{question_num}/{total_questions}",
+            color=0x2b9cff,
+            timestamp=datetime.now()
+        )
+        answer_embed.add_field(name="User ID", value=f"`{user_id}`", inline=True)
+        answer_embed.add_field(name="User", value=user_mention, inline=True)
+        answer_embed.add_field(name="Score", value=f"`{score}/1`", inline=True)
+        answer_embed.add_field(name="Question", value=f"_{question_text[:300]}_", inline=False)
+        answer_embed.add_field(name="Answer", value=f"```{answer_text[:500]}```", inline=False)
+        answer_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW ANSWER LOG")
+        
+        await ch.send(embed=answer_embed)
+    except Exception as e:
+        await log_error(f"interview answer log: {str(e)}")
+
+async def log_interview_complete(user_id: int, user_mention: str, score_total: int, total_questions: int, passed: bool, answers_list: list, questions_list: list):
+    """Log complete interview summary to INTERVIEW_LOGS_CHANNEL."""
+    if not INTERVIEW_LOGS_CHANNEL_ID:
+        return
+    
+    try:
+        ch = bot.get_channel(INTERVIEW_LOGS_CHANNEL_ID)
+        if not ch:
+            return
+        
+        # Build Q&A summary
+        qa_lines = []
+        for i, (q, ans) in enumerate(zip(questions_list[:10], answers_list[:10]), 1):
+            qa_lines.append(f"**Q{i}:** {q[:100]}\n**A{i}:** {ans[:100]}")
+        
+        qa_summary = "\n\n".join(qa_lines[:10])
+        
+        # Create final summary embed
+        summary_embed = discord.Embed(
+            title="🏁 INTERVIEW COMPLETE",
+            color=0x00ff00 if passed else 0xff0000,
+            timestamp=datetime.now()
+        )
+        summary_embed.add_field(name="User ID", value=f"`{user_id}`", inline=True)
+        summary_embed.add_field(name="User", value=user_mention, inline=True)
+        summary_embed.add_field(name="Final Score", value=f"`{score_total}/{total_questions}`", inline=True)
+        summary_embed.add_field(name="Status", value="✅ PASSED" if passed else "❌ FAILED/UNDER REVIEW", inline=False)
+        summary_embed.add_field(name="Q&A Summary", value=qa_summary[:1024], inline=False)
+        summary_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW FINAL LOG")
+        
+        await ch.send(embed=summary_embed)
+    except Exception as e:
+        await log_error(f"interview complete log: {str(e)}")
+
+async def generate_interview_summary(user_id: int, score_total: int, total_questions: int, answers_list: list, questions_list: list) -> str:
+    """Generate AI-powered summary of interview performance."""
+    try:
+        # Build Q&A context for AI
+        qa_context = ""
+        for i, (q, ans) in enumerate(zip(questions_list[:10], answers_list[:10]), 1):
+            qa_context += f"Q{i}: {q}\nA{i}: {ans}\n\n"
+        
+        summary_prompt = (
+            f"You are the Nimbror Watcher AI analyzing an interview. "
+            f"Provide a 2-3 sentence summary of the candidate's responses. "
+            f"Assess: clarity, respect, relevance, NSC awareness. "
+            f"Score: {score_total}/{total_questions}. "
+            f"Be concise and analytical.\n\n"
+            f"{qa_context}"
+        )
+        
+        ai_summary = await run_huggingface_concise(summary_prompt)
+        return ai_summary if ai_summary else f"Interview Score: {score_total}/{total_questions}. Candidate completed screening."
+    except Exception as e:
+        await log_error(f"interview summary generation: {str(e)}")
+        return f"Interview Score: {score_total}/{total_questions}. Unable to generate summary."
+
+async def send_interview_ai_summary(user_id: int, user_mention: str, score_total: int, total_questions: int, answers_list: list, questions_list: list, passed: bool):
+    """Send AI-generated interview summary to INTERVIEW_LOGS_CHANNEL."""
+    if not INTERVIEW_LOGS_CHANNEL_ID:
+        return
+    
+    try:
+        ch = bot.get_channel(INTERVIEW_LOGS_CHANNEL_ID)
+        if not ch:
+            return
+        
+        # Generate AI summary
+        ai_analysis = await generate_interview_summary(user_id, score_total, total_questions, answers_list, questions_list)
+        
+        # Create summary embed with AI analysis
+        summary_embed = discord.Embed(
+            title="🤖 AI INTERVIEW ANALYSIS",
+            color=0x00ff00 if passed else 0xff0000,
+            timestamp=datetime.now()
+        )
+        summary_embed.add_field(name="User ID", value=f"`{user_id}`", inline=True)
+        summary_embed.add_field(name="User", value=user_mention, inline=True)
+        summary_embed.add_field(name="Final Score", value=f"`{score_total}/{total_questions}`", inline=True)
+        summary_embed.add_field(name="AI Analysis", value=ai_analysis[:1024], inline=False)
+        summary_embed.add_field(name="Status", value="✅ PASSED" if passed else "❌ FAILED/UNDER REVIEW", inline=False)
+        summary_embed.set_footer(text="NIMBROR WATCHER v6.5 • AI ANALYSIS")
+        
+        await ch.send(embed=summary_embed)
+    except Exception as e:
+        await log_error(f"interview AI summary send: {str(e)}")
 
 def update_social_credit(user_id: str, amount: int, reason: str = "system"):
     """Update social credit score for a user (atomically) - sync wrapper for local db."""
@@ -2861,6 +2984,7 @@ async def on_message(message):
             total_questions = len(questions)
 
             # Score current answer and track answers
+            answered = False
             if idx < total_questions:
                 current_q = questions[idx]
                 points = await score_interview_answer(current_q, message.content)
@@ -2868,6 +2992,18 @@ async def on_message(message):
                 state.setdefault("answers", []).append(message.content)
                 add_memory(uid, "interaction", f"Interview Q{idx+1} answered ({points}/1)")
                 state["index"] = idx + 1
+                answered = True
+                
+                # Log answer to interview logs channel
+                await log_interview_answer(
+                    user_id=int(uid),
+                    user_mention=message.author.mention,
+                    question_num=idx + 1,
+                    total_questions=total_questions,
+                    question_text=current_q,
+                    answer_text=message.content,
+                    score=points
+                )
 
             idx = state["index"]
             score_total = state.get("score", 0)
@@ -2890,6 +3026,28 @@ async def on_message(message):
                         await message.author.send(embed=outcome_embed, view=InterviewFailView(message.author.id))
                     except Exception as e:
                         await log_error(f"interview fail dm: {str(e)}")
+                    
+                    # Log final interview summary
+                    await log_interview_complete(
+                        user_id=int(uid),
+                        user_mention=message.author.mention,
+                        score_total=score_total,
+                        total_questions=total_questions,
+                        passed=False,
+                        answers_list=state.get("answers", []),
+                        questions_list=questions
+                    )
+                    
+                    # Send AI analysis to logs
+                    await send_interview_ai_summary(
+                        user_id=int(uid),
+                        user_mention=message.author.mention,
+                        score_total=score_total,
+                        total_questions=total_questions,
+                        answers_list=state.get("answers", []),
+                        questions_list=questions,
+                        passed=False
+                    )
                     
                     # Log interview failure to INTERVIEW_CHANNEL
                     if INTERVIEW_CHANNEL_ID:
@@ -2924,6 +3082,28 @@ async def on_message(message):
                     
                     # Update interview session status to UNDER_REVIEW
                     await update_interview_session_status(uid, session_id, "UNDER_REVIEW")
+                    
+                    # Log final interview summary
+                    await log_interview_complete(
+                        user_id=int(uid),
+                        user_mention=message.author.mention,
+                        score_total=score_total,
+                        total_questions=total_questions,
+                        passed=False,
+                        answers_list=answers,
+                        questions_list=questions
+                    )
+                    
+                    # Send AI analysis to logs
+                    await send_interview_ai_summary(
+                        user_id=int(uid),
+                        user_mention=message.author.mention,
+                        score_total=score_total,
+                        total_questions=total_questions,
+                        answers_list=answers,
+                        questions_list=questions,
+                        passed=False
+                    )
                     
                     # Post to INTERVIEW_CHANNEL for staff oversight
                     if INTERVIEW_CHANNEL_ID and ticket_created:
@@ -2974,6 +3154,28 @@ async def on_message(message):
                     except Exception as e:
                         await log_error(f"interview role add: {str(e)}")
 
+                # Log final interview summary
+                await log_interview_complete(
+                    user_id=int(uid),
+                    user_mention=message.author.mention,
+                    score_total=score_total,
+                    total_questions=total_questions,
+                    passed=True,
+                    answers_list=state.get("answers", []),
+                    questions_list=questions
+                )
+                
+                # Send AI analysis to logs
+                await send_interview_ai_summary(
+                    user_id=int(uid),
+                    user_mention=message.author.mention,
+                    score_total=score_total,
+                    total_questions=total_questions,
+                    answers_list=state.get("answers", []),
+                    questions_list=questions,
+                    passed=True
+                )
+
                 outcome_text = "Perfect pass. Welcome to Nimbror." if score_total == total_questions else "Pass. Proceed quietly."
                 outcome_embed = create_embed(
                     "✅ ACCESS GRANTED",
@@ -2983,11 +3185,12 @@ async def on_message(message):
                 await message.author.send(embed=outcome_embed)
                 return
 
-            # Continue to next question
-            bot.db["interviews"][uid] = state
-            save_data(bot.db)
-            next_q = questions[idx]
-            await message.author.send(embed=create_embed("👁️ SCREENING", f"Q{idx+1}/{total_questions}: {next_q}"))
+            # Continue to next question (only if we just scored one)
+            if answered:
+                bot.db["interviews"][uid] = state
+                save_data(bot.db)
+                next_q = questions[idx]
+                await message.author.send(embed=create_embed("👁️ SCREENING", f"Q{idx+1}/{total_questions}: {next_q}"))
             return
 
         # --- Tickets / DM AI ---
@@ -3013,9 +3216,17 @@ async def on_message(message):
             
             # AI Response
             async with message.channel.typing():
+                # Build custom instruction context (hide specific user instructions from the mentioned user)
+                custom_instructions = bot.db.get("custom_instructions", {})
+                custom_context = ""
+                for user_id_key, instruction in custom_instructions.items():
+                    if user_id_key != uid:  # Don't include their own custom instruction
+                        custom_context += f"{instruction} "
+                
                 ai_response = await run_huggingface(
                     f"{LORE_CONTEXT}\n"
                     f"AI Memory for this user: {bot.db.get('memory', {}).get(uid, {})}\n"
+                    f"Custom instructions: {custom_context}\n"
                     f"User says: {message.content[:500]}"
                 )
                 
@@ -3071,7 +3282,15 @@ async def on_message(message):
             
             try:
                 async with message.channel.typing():
+                    # Build custom instruction context (hide specific user instructions from the mentioned user)
+                    custom_instructions = bot.db.get("custom_instructions", {})
+                    custom_context = ""
+                    for user_id_key, instruction in custom_instructions.items():
+                        if user_id_key != uid_mention:  # Don't include their own custom instruction
+                            custom_context += f"{instruction} "
+                    
                     ai_response = await run_huggingface_concise(
+                        f"Custom instructions: {custom_context}\n"
                         f"User says: {message.content[:200]}"
                     )
                     ai_response = clamp_response(ai_response, max_chars=500)
