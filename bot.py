@@ -29,6 +29,8 @@ ANNOUNCE_CHANNEL_ID = os.getenv("ANNOUNCE_CHANNEL_ID")
 INVITE_URL = os.getenv("INVITE_URL")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+REVIEW_CHANNEL_ID = os.getenv("REVIEW_CHANNEL_ID")
+INTERVIEW_CHANNEL_ID = os.getenv("INTERVIEW_CHANNEL")
 
 if not TOKEN:
     print("❌ DISCORD_TOKEN not set")
@@ -53,6 +55,8 @@ STAFF_CHANNEL_ID = to_int(STAFF_CHANNEL_ID)
 VERIFIED_ROLE_ID = to_int(VERIFIED_ROLE_ID)
 ERROR_LOG_ID = to_int(ERROR_LOG_ID)
 ANNOUNCE_CHANNEL_ID = to_int(ANNOUNCE_CHANNEL_ID)
+REVIEW_CHANNEL_ID = to_int(REVIEW_CHANNEL_ID)
+INTERVIEW_CHANNEL_ID = to_int(INTERVIEW_CHANNEL_ID)
 
 # AI Cooldown tracking (per user, 10s cooldown, auto-cleanup after expiry)
 AI_COOLDOWN = {}
@@ -89,14 +93,24 @@ EMBED_COLORS = {
 
 # --- KOYEB HEALTH CHECK ---
 app = Flask(__name__)
+app.logger.disabled = True  # Disable Flask logging to reduce spam
 
-@app.route("/")
+# Last internal keepalive timestamp
+LAST_KEEPALIVE = time.time()
+
+@app.route("/healthz", methods=["GET"])
+def health_check():
+    """HTTP health endpoint for external monitoring (UptimeRobot, etc)."""
+    return "OK", 200
+
+@app.route("/", methods=["GET"])
 def health():
+    """Fallback health endpoint."""
     return "Watcher online", 200
 
 def run_web():
     port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 threading.Thread(target=run_web, daemon=True).start()
 
@@ -271,6 +285,7 @@ class MyBot(discord.Client):
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
             self.uptime_update_loop.start()
+            self.internal_keepalive_loop.start()
         except Exception as e:
             print(f"⚠️ Command sync failed: {e}")
 
@@ -488,6 +503,16 @@ class MyBot(discord.Client):
                 print(f"⚠️ Uptime update error: {e}")
         except Exception as e:
             await log_error(f"uptime_update_loop: {traceback.format_exc()}")
+    
+    @tasks.loop(minutes=15)
+    async def internal_keepalive_loop(self):
+        """Internal keepalive every 15 minutes (does NOT hit Discord API or make external calls)."""
+        try:
+            global LAST_KEEPALIVE
+            LAST_KEEPALIVE = time.time()
+            # Just update internal state; no Discord or Supabase writes
+        except Exception as e:
+            pass  # Silent failure to avoid spam
 
 bot = MyBot()
 
@@ -562,6 +587,43 @@ def ensure_ok(response, context: str = "supabase"):
     """Raise if Supabase response has an error attribute."""
     if hasattr(response, "error") and response.error:
         raise Exception(f"{context}: {response.error}")
+
+async def is_user_untrusted(user_id: str) -> bool:
+    """Check if user is in untrusted mode. Returns True if untrusted and active."""
+    try:
+        response = supabase.table("untrusted_users").select("id").eq("user_id", user_id).eq("is_active", True).execute()
+        ensure_ok(response, "untrusted_users select")
+        return bool(response.data and len(response.data) > 0)
+    except Exception as e:
+        return False
+
+async def create_review_ticket(user_id: str, session_id: str, answers: list, score: int) -> bool:
+    """Create review ticket in Supabase. Returns True if successful."""
+    try:
+        ticket_data = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "answers": answers,
+            "score": score,
+            "status": "OPEN",
+            "created_at": datetime.now().isoformat()
+        }
+        response = supabase.table("review_tickets").insert(ticket_data).execute()
+        ensure_ok(response, "review_tickets insert")
+        return True
+    except Exception as e:
+        await log_error(f"create_review_ticket: {str(e)}")
+        return False
+
+async def update_interview_session_status(user_id: str, session_id: str, status: str) -> bool:
+    """Update interview session status. Returns True if successful."""
+    try:
+        response = supabase.table("interview_sessions").update({"status": status}).eq("user_id", user_id).eq("id", session_id).execute()
+        ensure_ok(response, "interview_sessions update")
+        return True
+    except Exception as e:
+        await log_error(f"update_interview_session_status: {str(e)}")
+        return False
 
 async def get_or_create_user(user_id: str) -> bool:
     """Alias to ensure user exists; returns True if user exists/created."""
@@ -1399,6 +1461,43 @@ class InterviewFailView(View):
         await interaction.response.send_message("✅ Staff pinged.", ephemeral=True)
 
 
+class UntrustedUserView(View):
+    """Activate untrusted user mode for a session under review."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+
+    @discord.ui.button(label="ENGAGE UNTRUSTED USER MODE", style=discord.ButtonStyle.danger, custom_id="engage_untrusted_mode")
+    async def engage_untrusted(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                embed=create_embed("Not Allowed", "Only staff can engage this mode.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+
+        try:
+            user_id_str = str(self.user_id)
+            untrusted_data = {
+                "user_id": user_id_str,
+                "is_active": True,
+                "created_at": datetime.now().isoformat()
+            }
+            response = supabase.table("untrusted_users").insert(untrusted_data).execute()
+            ensure_ok(response, "untrusted_users insert")
+            
+            await interaction.response.send_message(
+                embed=create_embed("✅ Mode Engaged", f"User `{user_id_str}` is now in untrusted monitoring mode.", color=EMBED_COLORS["warning"]),
+                ephemeral=True
+            )
+        except Exception as e:
+            await log_error(f"engage_untrusted_mode: {str(e)}")
+            await interaction.response.send_message(
+                embed=create_embed("Error", "Failed to engage mode.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+
+
 class HelpView(View):
     """Buttons for help embed."""
     def __init__(self):
@@ -1901,9 +2000,17 @@ async def prophecy(interaction: discord.Interaction):
 @bot.tree.command(name="shop", description="Browse and purchase items")
 async def shop(interaction: discord.Interaction):
     """Display shop items with user credit and tier info."""
-    await interaction.response.defer(ephemeral=False)
-
     user_id = str(interaction.user.id)
+    
+    # Check if untrusted
+    if await is_user_untrusted(user_id):
+        await interaction.response.send_message(
+            embed=create_embed("Access Restricted", "Untrusted users cannot access the shop.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer(ephemeral=False)
 
     try:
         await ensure_user_exists(user_id)
@@ -1993,9 +2100,18 @@ async def inventory(interaction: discord.Interaction):
 @bot.tree.command(name="compliment", description="Compliment another user")
 async def compliment(interaction: discord.Interaction, user: discord.User, message: str):
     """Send a compliment to another user and give them credit."""
+    from_user = str(interaction.user.id)
+    
+    # Check if untrusted
+    if await is_user_untrusted(from_user):
+        await interaction.response.send_message(
+            embed=create_embed("Access Restricted", "Untrusted users cannot give compliments.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
     await interaction.response.defer(ephemeral=False)
     
-    from_user = str(interaction.user.id)
     to_user = str(user.id)
     
     # Prevent self-compliments
@@ -2060,6 +2176,16 @@ async def compliment(interaction: discord.Interaction, user: discord.User, messa
 @bot.tree.command(name="buy", description="Purchase an item directly")
 async def buy(interaction: discord.Interaction, item_id: int):
     """Buy an item directly by ID without using the shop menu."""
+    user_id = str(interaction.user.id)
+    
+    # Check if untrusted
+    if await is_user_untrusted(user_id):
+        await interaction.response.send_message(
+            embed=create_embed("Access Restricted", "Untrusted users cannot purchase items.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
     await interaction.response.defer(ephemeral=False)
     
     user_id = str(interaction.user.id)
@@ -2734,11 +2860,12 @@ async def on_message(message):
             idx = state.get("index", 0)
             total_questions = len(questions)
 
-            # Score current answer
+            # Score current answer and track answers
             if idx < total_questions:
                 current_q = questions[idx]
                 points = await score_interview_answer(current_q, message.content)
                 state["score"] = state.get("score", 0) + points
+                state.setdefault("answers", []).append(message.content)
                 add_memory(uid, "interaction", f"Interview Q{idx+1} answered ({points}/1)")
                 state["index"] = idx + 1
 
@@ -2763,22 +2890,73 @@ async def on_message(message):
                         await message.author.send(embed=outcome_embed, view=InterviewFailView(message.author.id))
                     except Exception as e:
                         await log_error(f"interview fail dm: {str(e)}")
+                    
+                    # Log interview failure to INTERVIEW_CHANNEL
+                    if INTERVIEW_CHANNEL_ID:
+                        try:
+                            ch = bot.get_channel(INTERVIEW_CHANNEL_ID)
+                            if ch:
+                                fail_embed = discord.Embed(
+                                    title="🔴 INTERVIEW FAILED",
+                                    color=0xff0000,
+                                    timestamp=datetime.now()
+                                )
+                                fail_embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+                                fail_embed.add_field(name="Score", value=f"`{score_total}/10`", inline=True)
+                                fail_embed.add_field(name="User", value=f"{message.author.mention}", inline=False)
+                                fail_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW FAILED")
+                                await ch.send(f"<@765028951541940225>", embed=fail_embed)
+                        except Exception as e:
+                            await log_error(f"interview fail channel log: {str(e)}")
                     return
 
                 if score_total <= 6:
                     update_social_credit(uid, 0)
+                    
+                    # Generate session ID
+                    session_id = f"interview_{uid}_{int(time.time())}"
+                    
+                    # Store answers for review
+                    answers = state.get("answers", [])
+                    
+                    # Create review ticket in Supabase
+                    ticket_created = await create_review_ticket(uid, session_id, answers, score_total)
+                    
+                    # Update interview session status to UNDER_REVIEW
+                    await update_interview_session_status(uid, session_id, "UNDER_REVIEW")
+                    
+                    # Post to INTERVIEW_CHANNEL for staff oversight
+                    if INTERVIEW_CHANNEL_ID and ticket_created:
+                        try:
+                            ch = bot.get_channel(INTERVIEW_CHANNEL_ID)
+                            if ch:
+                                # Build answers summary
+                                qa_summary = ""
+                                for i, ans in enumerate(answers[:10], 1):
+                                    qa_summary += f"**Q{i}:** {ans[:80]}\n"
+                                
+                                review_embed = discord.Embed(
+                                    title="⚠️ INTERVIEW REQUIRES REVIEW",
+                                    color=0xff9900,
+                                    timestamp=datetime.now()
+                                )
+                                review_embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+                                review_embed.add_field(name="Session ID", value=f"`{session_id}`", inline=True)
+                                review_embed.add_field(name="Score", value=f"`{score_total}/10`", inline=False)
+                                review_embed.add_field(name="Answers", value=qa_summary[:1024], inline=False)
+                                review_embed.set_footer(text="NIMBROR WATCHER v6.5 • HUMAN OVERSIGHT REQUIRED")
+                                
+                                # Send review embed with untrusted mode button
+                                msg = await ch.send(f"<@765028951541940225>", embed=review_embed, view=UntrustedUserView(message.author.id))
+                        except Exception as e:
+                            await log_error(f"interview review channel log: {str(e)}")
+                    
                     outcome_embed = create_embed(
                         "⚠️ HUMAN REVIEW REQUIRED",
                         f"Score: {score_total}/10. Awaiting staff intervention.",
                         color=EMBED_COLORS["warning"]
                     )
                     await message.author.send(embed=outcome_embed)
-
-                    # Ping owner in announce for human intervention
-                    if ANNOUNCE_CHANNEL_ID:
-                        ch = await safe_get_channel(ANNOUNCE_CHANNEL_ID)
-                        if ch:
-                            await ch.send(f"<@765028951541940225> interview review needed for {message.author.mention} (score {score_total}/10)")
                     return
 
                 # Passed
