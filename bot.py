@@ -7,11 +7,9 @@ import os
 import random
 import json
 import traceback
-import threading
 import asyncio
 import time
 from datetime import timedelta, datetime
-from flask import Flask
 from dotenv import load_dotenv
 from typing import Optional
 from supabase import create_client, Client
@@ -143,28 +141,9 @@ EMBED_COLORS = {
     "error": 0xff0000, "neutral": 0x888888, "special": 0xff1493
 }
 
-# --- KOYEB HEALTH CHECK ---
-app = Flask(__name__)
-app.logger.disabled = True  # Disable Flask logging to reduce spam
-
-# Last internal keepalive timestamp
-LAST_KEEPALIVE = time.time()
-
-@app.route("/healthz", methods=["GET"])
-def health_check():
-    """HTTP health endpoint for external monitoring (UptimeRobot, etc)."""
-    return "OK", 200
-
-@app.route("/", methods=["GET"])
-def health():
-    """Fallback health endpoint."""
-    return "Watcher online", 200
-
-def run_web():
-    port = int(os.environ.get("PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-threading.Thread(target=run_web, daemon=True).start()
+# REMOVED: Flask health check endpoints and web server
+# Reason: Unnecessary HTTP logs and overhead; Koyeb can use Discord bot status instead
+# (Previously: Flask app with /healthz and / routes running on port 8000)
 
 # --- SUPABASE STORAGE ---
 def load_data():
@@ -403,7 +382,7 @@ class MyBot(discord.Client):
             self.dynamic_social_credit_events.start()
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
-            self.internal_keepalive_loop.start()
+            # REMOVED: self.internal_keepalive_loop.start() - unnecessary timestamp updates
             # Start Koyeb auto-redeploy if credentials are configured
             if KOYEB_APP_ID and KOYEB_API_TOKEN:
                 self.koyeb_auto_redeploy.start()
@@ -605,42 +584,19 @@ class MyBot(discord.Client):
         except Exception as e:
             await log_error(f"corruption_monitor: {traceback.format_exc()}")
     
-    @tasks.loop(minutes=30)  # RATE LIMIT SAFETY: Reduced from 1min to 30min to prevent Discord API spam
-    async def uptime_update_loop(self):
-        """Update uptime embed in announce channel every 30 minutes (was 1 minute - changed to prevent rate limiting)."""
-        try:
-            global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
-            
-            if not UPTIME_MESSAGE_ID or not UPTIME_CHANNEL_ID:
-                return
-            
-            try:
-                channel = self.get_channel(UPTIME_CHANNEL_ID)
-                if not channel:
-                    return
-                
-                msg = await channel.fetch_message(UPTIME_MESSAGE_ID)
-                uptime_embed = create_uptime_embed()
-                # RATE LIMIT SAFETY: Suppress all mentions on edit
-                await msg.edit(embed=uptime_embed, allowed_mentions=discord.AllowedMentions.none())
-            except discord.NotFound:
-                # Message was deleted, clear tracking
-                UPTIME_MESSAGE_ID = None
-                UPTIME_CHANNEL_ID = None
-            except Exception as e:
-                print(f"⚠️ Uptime update error: {e}")
-        except Exception as e:
-            await log_error(f"uptime_update_loop: {traceback.format_exc()}")
+    # REMOVED: uptime_update_loop (unnecessary Discord API calls every 30 min)
+    # Reason: Reduces overhead and prevents potential rate limiting
+    # @tasks.loop(minutes=30)
+    # async def uptime_update_loop(self):
+    #     """DISABLED: Update uptime embed in announce channel."""
+    #     pass
     
-    @tasks.loop(minutes=15)
-    async def internal_keepalive_loop(self):
-        """Internal keepalive every 15 minutes (does NOT hit Discord API or make external calls)."""
-        try:
-            global LAST_KEEPALIVE
-            LAST_KEEPALIVE = time.time()
-            # Just update internal state; no Discord or Supabase writes
-        except Exception as e:
-            pass  # Silent failure to avoid spam
+    # REMOVED: internal_keepalive_loop (unnecessary timestamp updates)
+    # Reason: No functional purpose, just updates LAST_KEEPALIVE timestamp
+    # @tasks.loop(minutes=15)
+    # async def internal_keepalive_loop(self):
+    #     """DISABLED: Internal keepalive."""
+    #     pass
     
     @tasks.loop(minutes=15)
     async def koyeb_auto_redeploy(self):
@@ -3662,6 +3618,8 @@ async def on_ready():
     
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
+    print("🔧 Refactor applied: Removed uptime_update_loop and internal_keepalive_loop")
+    print("   → Preserved: All commands, AI queue, trials, corruption monitor, Koyeb redeploy")
 
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
@@ -3684,8 +3642,7 @@ async def on_ready():
     
     # Start background tasks
     try:
-        if not bot.internal_keepalive_loop.is_running():
-            bot.internal_keepalive_loop.start()
+        # REMOVED: internal_keepalive_loop - unnecessary overhead
         if not bot.corruption_monitor.is_running():
             bot.corruption_monitor.start()
         if not bot.trial_timeout_check.is_running():
