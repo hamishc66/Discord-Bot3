@@ -11,7 +11,7 @@ import threading
 import asyncio
 import time
 from datetime import timedelta, datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask
 from dotenv import load_dotenv
 from typing import Optional
 from supabase import create_client, Client
@@ -70,6 +70,10 @@ ERROR_LOG_COOLDOWN_DURATION = 5
 
 # Startup tracking for uptime
 START_TIME = time.time()
+PROCESS_START_TIME = START_TIME  # Monotonic start time for uptime (never resets)
+RECONNECT_COUNT = 0  # Track disconnects
+UPTIME_MESSAGE_ID = None  # Store message ID for embed updates
+UPTIME_CHANNEL_ID = None  # Store channel ID for embed updates
 
 # Status tracking
 LAST_SOCIAL_EVENT = None
@@ -84,25 +88,17 @@ EMBED_COLORS = {
 }
 
 # --- KOYEB HEALTH CHECK ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        try:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"Watcher System Nominal")
-        except Exception as e:
-            print(f"❌ Health check handler error: {e}")
-    def log_message(self, *args):
-        pass
+app = Flask(__name__)
 
-def run_health_check():
-    try:
-        server = HTTPServer(("0.0.0.0", 8000), HealthCheckHandler)
-        server.serve_forever()
-    except Exception as e:
-        print(f"❌ Health check error: {e}")
+@app.route("/")
+def health():
+    return "Watcher online", 200
 
-threading.Thread(target=run_health_check, daemon=True).start()
+def run_web():
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
 
 # --- SUPABASE STORAGE ---
 def load_data():
@@ -274,6 +270,7 @@ class MyBot(discord.Client):
             self.dynamic_social_credit_events.start()
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
+            self.uptime_update_loop.start()
         except Exception as e:
             print(f"⚠️ Command sync failed: {e}")
 
@@ -465,6 +462,32 @@ class MyBot(discord.Client):
                         print(f"⚠️ Corruption announcement error: {e}")
         except Exception as e:
             await log_error(f"corruption_monitor: {traceback.format_exc()}")
+    
+    @tasks.loop(minutes=1)
+    async def uptime_update_loop(self):
+        """Update uptime embed in announce channel every minute."""
+        try:
+            global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
+            
+            if not UPTIME_MESSAGE_ID or not UPTIME_CHANNEL_ID:
+                return
+            
+            try:
+                channel = self.get_channel(UPTIME_CHANNEL_ID)
+                if not channel:
+                    return
+                
+                msg = await channel.fetch_message(UPTIME_MESSAGE_ID)
+                uptime_embed = create_uptime_embed()
+                await msg.edit(embed=uptime_embed)
+            except discord.NotFound:
+                # Message was deleted, clear tracking
+                UPTIME_MESSAGE_ID = None
+                UPTIME_CHANNEL_ID = None
+            except Exception as e:
+                print(f"⚠️ Uptime update error: {e}")
+        except Exception as e:
+            await log_error(f"uptime_update_loop: {traceback.format_exc()}")
 
 bot = MyBot()
 
@@ -476,6 +499,34 @@ def create_embed(title, description, color=0x00ffff, footer=None, timestamp=Fals
         e.timestamp = datetime.now()
     e.set_footer(text=footer or "NIMBROR WATCHER v6.5")
     return e
+
+def format_uptime() -> str:
+    """Format uptime as human-readable string (days, hours, minutes, seconds)."""
+    uptime_seconds = int(time.time() - PROCESS_START_TIME)
+    days = uptime_seconds // 86400
+    hours = (uptime_seconds % 86400) // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    seconds = uptime_seconds % 60
+    
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m {seconds}s"
+    elif hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    else:
+        return f"{minutes}m {seconds}s"
+
+def create_uptime_embed() -> discord.Embed:
+    """Create the uptime status embed for announce channel."""
+    uptime_str = format_uptime()
+    embed = discord.Embed(
+        title="📡 WATCHER SYSTEM UPTIME",
+        color=0x00ffff,
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="🟢 Uptime", value=f"`{uptime_str}`", inline=True)
+    embed.add_field(name="🔁 Reconnects", value=f"`{RECONNECT_COUNT}`", inline=True)
+    embed.set_footer(text="NIMBROR WATCHER v6.5 • Auto-updating")
+    return embed
 
 def cleanup_expired_cooldowns():
     """Remove expired cooldowns from tracking dicts to prevent memory leaks."""
@@ -549,7 +600,7 @@ async def log_error(msg):
         print(f"❌ Log error: {e}")
 
 def update_social_credit(user_id: str, amount: int, reason: str = "system"):
-    """Update social credit score for a user (atomically)."""
+    """Update social credit score for a user (atomically) - sync wrapper for local db."""
     uid = str(user_id)
     bot.db.setdefault("social_credit", {})[uid] = bot.db["social_credit"].get(uid, 0) + amount
     save_data(bot.db)
@@ -724,12 +775,13 @@ async def purchase_item(user_id: str, item_id: int, item_name: str, item_cost: i
         await update_user_credit(user_id, -item_cost, f"purchased:{item_name}")
         
         # Record purchase
-        supabase.table("purchases").insert({
+        purchase_resp = supabase.table("purchases").insert({
             "user_id": user_id,
             "item_id": item_id,
             "quantity": 1,
             "created_at": datetime.now().isoformat()
         }).execute()
+        ensure_ok(purchase_resp, "purchases insert")
         
         return True, f"Successfully purchased {item_name}!", new_credit
     except Exception as e:
@@ -743,12 +795,13 @@ async def add_compliment_credit(from_user: str, to_user: str, amount: int = 1) -
         await ensure_user_exists(to_user)
         
         # Record compliment
-        supabase.table("compliments").insert({
+        compliment_resp = supabase.table("compliments").insert({
             "from_user": from_user,
             "to_user": to_user,
             "amount": amount,
             "created_at": datetime.now().isoformat()
         }).execute()
+        ensure_ok(compliment_resp, "compliments insert")
         
         # Add credit to recipient
         await update_user_credit(to_user, amount, f"compliment_from:{from_user}")
@@ -795,11 +848,12 @@ async def add_to_wishlist(user_id: str, item_id: int) -> tuple:
             return False, "Item already in wishlist."
         
         # Add to wishlist
-        supabase.table("wishlist").insert({
+        wishlist_resp = supabase.table("wishlist").insert({
             "user_id": user_id,
             "item_id": item_id,
             "created_at": datetime.now().isoformat()
         }).execute()
+        ensure_ok(wishlist_resp, "wishlist insert")
         
         return True, "Added to wishlist!"
     except Exception as e:
@@ -865,6 +919,18 @@ def corrupt_message(text: str) -> str:
         text + " " + "".join([random.choice(["█", "▓", "?", "~"]) for _ in range(random.randint(5, 15))]),  # Add noise
     ]
     return random.choice(effects)
+
+def redact_message(text: str) -> str:
+    """Randomly redact 10-30% of words in a message."""
+    words = text.split()
+    if len(words) == 0:
+        return text
+    redact_count = random.randint(max(1, len(words) // 10), max(1, len(words) // 3))
+    indices_to_redact = random.sample(range(len(words)), min(redact_count, len(words)))
+    for idx in indices_to_redact:
+        word_len = len(words[idx])
+        words[idx] = "█" * max(1, word_len // 2)
+    return " ".join(words)
 
 def get_privilege_level(user_id: str) -> str:
     """Determine privilege level based on social credit."""
@@ -1332,6 +1398,33 @@ class InterviewFailView(View):
                 pass
         await interaction.response.send_message("✅ Staff pinged.", ephemeral=True)
 
+
+class HelpView(View):
+    """Buttons for help embed."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Open Ticket", style=discord.ButtonStyle.blurple, custom_id="help_open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: Button):
+        """Open a ticket via the help menu."""
+        uid = str(interaction.user.id)
+        
+        # Check privilege
+        if not can_access_feature(uid, "ticket"):
+            await interaction.response.send_message(
+                embed=create_embed("Access Denied", "Your privilege level does not permit filing tickets.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        view = TicketTypeSelect(interaction.user.id)
+        embed = create_embed(
+            "New Ticket",
+            "Select issue type:\n• **Serious** — Emotional/critical matters\n• **General** — Everything else",
+            color=EMBED_COLORS["info"]
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 # --- RESPONSE CLAMPING ---
 def clamp_response(text: str, max_chars: int = 500) -> str:
     """Hard limit response length to prevent walls of text."""
@@ -1398,8 +1491,10 @@ async def help_cmd(interaction: discord.Interaction):
 
         "🛒 **ECONOMY**\n"
         "`/shop` — Pulls live shop catalog from Supabase; shows tiers, prices, and purchase hint.\n"
+        "`/buy <item>` — Purchase item by name; deducts credits via Supabase.\n"
         "`/inventory` — Lists your purchased items aggregated by quantity.\n"
-        "`/compliment @user message` — Grants target credits (Supabase) with cooldown and anti-self checks.\n\n"
+        "`/compliment @user message` — Grants target credits (Supabase) with cooldown and anti-self checks.\n"
+        "`/wishlist [view/add/remove] [item]` — Manage your wishlist on Supabase.\n\n"
         
         "💳 **SOCIAL CREDIT TIERS**\n"
         "🟢 **Trusted Asset** (80+) — Full access, exemplary citizen\n"
@@ -1424,7 +1519,8 @@ async def help_cmd(interaction: discord.Interaction):
         cmds,
         color=EMBED_COLORS["info"]
     )
-    await interaction.response.send_message(embed=embed)
+    view = HelpView()
+    await interaction.response.send_message(embed=embed, view=view)
 
 @bot.tree.command(name="intel", description="Classified info")
 async def intel(interaction: discord.Interaction):
@@ -1755,6 +1851,18 @@ async def status(interaction: discord.Interaction):
         description = corrupt_message(description)
     
     embed = create_embed("📡 WATCHER SYSTEM STATUS", description, color=desc_color)
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="uptime", description="Check bot process uptime and reconnect count")
+async def uptime(interaction: discord.Interaction):
+    """Show current process uptime and reconnect count."""
+    uptime_str = format_uptime()
+    embed = create_embed(
+        "⏱️ PROCESS UPTIME",
+        f"🟢 **Uptime:** `{uptime_str}`\n"
+        f"🔁 **Reconnects:** `{RECONNECT_COUNT}`",
+        color=EMBED_COLORS["success"]
+    )
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="pingwatcher", description="Ping the Watcher")
@@ -2421,10 +2529,57 @@ async def marry(interaction: discord.Interaction, user1: discord.User, user2: di
         except:
             pass
 
+@bot.tree.command(name="whisper", description="[ADMIN ONLY - DM ONLY] Anonymous Watcher broadcast")
+async def whisper(interaction: discord.Interaction, message: str):
+    """Admin-only DM command to post anonymous Watcher messages. Must be called in DM. Silently fails if conditions not met."""
+    if not isinstance(interaction.channel, discord.DMChannel):
+        return
+    
+    owner_id = 765028951541940225
+    is_owner = interaction.user.id == owner_id
+    is_admin = interaction.user.guild_permissions.administrator if hasattr(interaction.user, 'guild_permissions') else False
+    
+    if not (is_owner or is_admin):
+        return
+    
+    flags = {"redacted": "--redacted" in message, "delay": "--delay" in message}
+    clean_message = message.replace("--redacted", "").replace("--delay", "").strip()
+    
+    if not clean_message:
+        return
+    
+    await interaction.response.defer()
+    
+    if flags["redacted"]:
+        clean_message = redact_message(clean_message)
+    
+    delay = random.randint(10, 90) if not flags["delay"] else 90
+    await asyncio.sleep(delay)
+    
+    if ANNOUNCE_CHANNEL_ID:
+        try:
+            ch = bot.get_channel(ANNOUNCE_CHANNEL_ID)
+            if ch:
+                embed = discord.Embed(
+                    title="📡 WATCHER BROADCAST",
+                    description=clean_message,
+                    color=0x888888,
+                    timestamp=datetime.now()
+                )
+                embed.set_footer(text="NIMBROR WATCHER v6.5 • SYSTEM MESSAGE")
+                await ch.send(embed=embed)
+            await interaction.followup.send("✅ Message sent.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send("❌ Send failed.", ephemeral=True)
+    else:
+        await interaction.followup.send("❌ No announce channel.", ephemeral=True)
+
 # --- EVENTS ---
 @bot.event
 async def on_ready():
     """Bot connected and ready."""
+    global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
+    
     if not bot.user:
         return
     
@@ -2449,13 +2604,33 @@ async def on_ready():
         embed.add_field(name="Status", value="Ready", inline=True)
         embed.set_footer(text=f"ID: {bot.user.id}")
         await channel.send(embed=embed)
+        
+        # Send uptime embed and store message ID for updates
+        uptime_embed = create_uptime_embed()
+        uptime_msg = await channel.send(embed=uptime_embed)
+        UPTIME_MESSAGE_ID = uptime_msg.id
+        UPTIME_CHANNEL_ID = channel.id
     except Exception as e:
         print(f"❌ Failed to send startup announcement: {e}")
 
 @bot.event
 async def on_disconnect():
-    """Bot disconnected."""
-    print(f"⚠️ Bot disconnected")
+    """Bot disconnected. Track reconnect count and update uptime embed."""
+    global RECONNECT_COUNT, UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
+    
+    RECONNECT_COUNT += 1
+    print(f"⚠️ Bot disconnected (Reconnect #{RECONNECT_COUNT})")
+    
+    # Try to update uptime embed on disconnect
+    if UPTIME_MESSAGE_ID and UPTIME_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(UPTIME_CHANNEL_ID)
+            if channel:
+                msg = await channel.fetch_message(UPTIME_MESSAGE_ID)
+                uptime_embed = create_uptime_embed()
+                await msg.edit(embed=uptime_embed)
+        except Exception as e:
+            print(f"⚠️ Could not update uptime embed: {e}")
 
 @bot.event
 async def on_member_join(member):
@@ -2744,9 +2919,6 @@ async def on_message(message):
         print(f"❌ {error_msg}")
         traceback.print_exc()
         await log_error(error_msg)
-    
-    # CRITICAL: Allow slash commands to process (runs after all other handlers)
-    await bot.process_commands(message)
 
 # --- RUN ---
 try:
