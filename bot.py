@@ -92,6 +92,11 @@ GLOBAL_COMMAND_COOLDOWN_DURATION = 3
 # Track whether app commands have been synced to Discord (prevents double-sync on reconnects)
 COMMANDS_SYNCED = False
 
+# Koyeb auto-redeploy system: track last redeploy time (15 min cooldown)
+LAST_KOYEB_REDEPLOY = 0
+KOYEB_REDEPLOY_COOLDOWN = 900  # 15 minutes in seconds
+KOYEB_REDEPLOY_IN_PROGRESS = False
+
 async def sync_app_commands(guild: Optional[discord.Object] = None) -> int:
     """Sync application commands once; returns count synced."""
     global COMMANDS_SYNCED
@@ -399,6 +404,10 @@ class MyBot(discord.Client):
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
             self.internal_keepalive_loop.start()
+            # Start Koyeb auto-redeploy if credentials are configured
+            if KOYEB_APP_ID and KOYEB_API_TOKEN:
+                self.koyeb_auto_redeploy.start()
+                print("🔄 Koyeb auto-redeploy enabled (15min interval)")
             if not COMMANDS_SYNCED:
                 await sync_app_commands()
                 self.synced = COMMANDS_SYNCED
@@ -632,6 +641,80 @@ class MyBot(discord.Client):
             # Just update internal state; no Discord or Supabase writes
         except Exception as e:
             pass  # Silent failure to avoid spam
+    
+    @tasks.loop(minutes=15)
+    async def koyeb_auto_redeploy(self):
+        """Koyeb auto-redeploy: Safely redeploy service every 15 minutes with cooldown and error handling."""
+        global LAST_KOYEB_REDEPLOY, KOYEB_REDEPLOY_IN_PROGRESS
+        
+        # Skip if no credentials configured
+        if not KOYEB_APP_ID or not KOYEB_API_TOKEN:
+            return
+        
+        # Prevent overlapping redeploys
+        if KOYEB_REDEPLOY_IN_PROGRESS:
+            print("⚠️ Koyeb redeploy already in progress, skipping")
+            return
+        
+        # Check cooldown (15 min minimum between redeploys)
+        current_time = time.time()
+        time_since_last = current_time - LAST_KOYEB_REDEPLOY
+        if time_since_last < KOYEB_REDEPLOY_COOLDOWN:
+            remaining = int(KOYEB_REDEPLOY_COOLDOWN - time_since_last)
+            print(f"⏳ Koyeb redeploy on cooldown: {remaining}s remaining")
+            return
+        
+        KOYEB_REDEPLOY_IN_PROGRESS = True
+        
+        try:
+            # Log redeploy attempt with timestamp
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"🔄 [{timestamp}] Initiating Koyeb redeploy for app: {KOYEB_APP_ID}")
+            
+            # Koyeb API endpoint for redeploying a service
+            url = f"https://app.koyeb.com/v1/services/{KOYEB_APP_ID}/redeploy"
+            headers = {
+                "Authorization": f"Bearer {KOYEB_API_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            
+            # Make async HTTP request (run in executor to avoid blocking)
+            loop = asyncio.get_event_loop()
+            
+            def make_request():
+                try:
+                    response = requests.post(url, headers=headers, timeout=30)
+                    return response
+                except Exception as e:
+                    return e
+            
+            result = await loop.run_in_executor(None, make_request)
+            
+            # Handle response
+            if isinstance(result, Exception):
+                print(f"❌ [{timestamp}] Koyeb redeploy network error: {type(result).__name__}: {str(result)}")
+            elif hasattr(result, 'status_code'):
+                if result.status_code == 200 or result.status_code == 201:
+                    print(f"✅ [{timestamp}] Koyeb redeploy successful (status: {result.status_code})")
+                    LAST_KOYEB_REDEPLOY = current_time
+                elif result.status_code == 429:
+                    print(f"⚠️ [{timestamp}] Koyeb API rate limit hit (429), will retry later")
+                else:
+                    print(f"⚠️ [{timestamp}] Koyeb redeploy failed: HTTP {result.status_code}")
+                    try:
+                        error_data = result.json()
+                        print(f"   Error details: {error_data}")
+                    except:
+                        print(f"   Response: {result.text[:200]}")
+            else:
+                print(f"❌ [{timestamp}] Koyeb redeploy unexpected response type")
+                
+        except Exception as e:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"❌ [{timestamp}] Koyeb redeploy critical error: {type(e).__name__}: {str(e)}")
+            await log_error(f"koyeb_auto_redeploy: {traceback.format_exc()}")
+        finally:
+            KOYEB_REDEPLOY_IN_PROGRESS = False
     
     @tasks.loop(seconds=1)
     async def ai_queue_processor(self):
