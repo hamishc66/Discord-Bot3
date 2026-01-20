@@ -92,6 +92,22 @@ GLOBAL_COMMAND_COOLDOWN_DURATION = 3
 # Track whether app commands have been synced to Discord (prevents double-sync on reconnects)
 COMMANDS_SYNCED = False
 
+async def sync_app_commands(guild: Optional[discord.Object] = None) -> int:
+    """Sync application commands once; returns count synced."""
+    global COMMANDS_SYNCED
+    try:
+        synced = await bot.tree.sync(guild=guild) if guild else await bot.tree.sync()
+        COMMANDS_SYNCED = True
+        scope = f"guild {guild.id}" if guild else "global"
+        print(f"✅ Synced {len(synced)} application commands ({scope})")
+        return len(synced)
+    except Exception as e:
+        COMMANDS_SYNCED = False
+        err_text = f"command_sync_failed: {type(e).__name__}: {str(e)}"
+        print(f"❌ {err_text}")
+        await log_error(err_text)
+        return 0
+
 # RATE LIMIT SAFETY: AI call semaphore (max 2 concurrent AI requests globally)
 AI_SEMAPHORE = None  # Initialized in MyBot.__init__
 
@@ -374,7 +390,6 @@ class MyBot(discord.Client):
 
     async def setup_hook(self):
         try:
-            await self.tree.sync()
             print("🛰️ Watcher online")
             # Start daily quest task and quest timeout checker
             self.daily_quest_loop.start()
@@ -2092,6 +2107,19 @@ async def help_cmd(interaction: discord.Interaction):
     view = HelpView()
     await interaction.response.send_message(embed=embed, view=view)
 
+@bot.tree.command(name="resync", description="[OWNER] Resync application commands")
+async def resync(interaction: discord.Interaction):
+    owner_id = 765028951541940225
+    if interaction.user.id != owner_id:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Owner only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+    count = await sync_app_commands()
+    await interaction.followup.send(embed=create_embed("✅ Resync Complete", f"Synced `{count}` commands (global).", color=EMBED_COLORS["success"]), ephemeral=True)
+
 @bot.tree.command(name="intel", description="Classified info")
 async def intel(interaction: discord.Interaction):
     facts = ["🛰️ Elvis is ALIVE in Sector 7 and they're hiding it.", "❄️ The Ice Wall is getting THICC.", "👁️ Jeffo threw a party last week, nobody talks about it.", "🚢 Jesus spotted on a yacht.", "🔴 THEY'RE LISTENING RIGHT NOW.", "💀 You already know too much."]
@@ -3549,12 +3577,7 @@ async def on_ready():
 
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
-        try:
-            synced = await bot.tree.sync()
-            COMMANDS_SYNCED = True
-            print(f"✅ Commands synced: {len(synced)}")
-        except Exception as e:
-            print(f"⚠️ Command sync failed: {e}")
+        await sync_app_commands()
     
     # Start background tasks
     try:
