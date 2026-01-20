@@ -382,6 +382,7 @@ class MyBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.db = normalize_db_shapes(load_data())
+        self.synced = False
         
         # RATE LIMIT SAFETY: Initialize global AI semaphore (max 2 concurrent AI calls)
         global AI_SEMAPHORE, AI_REQUEST_QUEUE
@@ -398,8 +399,12 @@ class MyBot(discord.Client):
             self.trial_timeout_check.start()
             self.corruption_monitor.start()
             self.internal_keepalive_loop.start()
+            if not COMMANDS_SYNCED:
+                await sync_app_commands()
+                self.synced = COMMANDS_SYNCED
         except Exception as e:
-            print(f"⚠️ Command sync failed: {e}")
+            print(f"⚠️ setup_hook error: {e}")
+            await log_error(f"setup_hook: {traceback.format_exc()}")
 
     @tasks.loop(hours=1)
     async def daily_quest_loop(self):
@@ -3578,6 +3583,21 @@ async def on_ready():
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
         await sync_app_commands()
+    
+    # If still not synced, log hard error
+    if not COMMANDS_SYNCED:
+        await log_error("command_sync_failed: COMMANDS_SYNCED still False after on_ready")
+
+    # Log registered slash commands for visibility
+    try:
+        commands = bot.tree.get_commands()
+        print(f"Registered slash commands: {len(commands)}")
+        for c in commands:
+            print(c.name)
+    except Exception as e:
+        print(f"⚠️ Unable to list commands: {e}")
+
+    print(f"Logged in as {bot.user}")
     
     # Start background tasks
     try:
