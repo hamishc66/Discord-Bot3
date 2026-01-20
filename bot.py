@@ -60,9 +60,20 @@ REVIEW_CHANNEL_ID = to_int(REVIEW_CHANNEL_ID)
 INTERVIEW_CHANNEL_ID = to_int(INTERVIEW_CHANNEL_ID)
 INTERVIEW_LOGS_CHANNEL_ID = to_int(INTERVIEW_LOGS_CHANNEL_ID)
 
-# AI Cooldown tracking (per user, 10s cooldown, auto-cleanup after expiry)
-AI_COOLDOWN = {}
-COOLDOWN_DURATION = 10
+# AI Cooldown tracking - REPLACED WITH ADAPTIVE COOLDOWN SYSTEM (see below)
+AI_COOLDOWN = {}  # Legacy - kept for backward compatibility
+COOLDOWN_DURATION = 15  # Base cooldown
+
+# ADAPTIVE COOLDOWN SYSTEM: Per-user escalating cooldowns for rate limit resilience
+AI_COOLDOWN_STATE = {}  # {user_id: {"level": 0-3, "last_violation": timestamp, "cooldown_until": timestamp}}
+ADAPTIVE_COOLDOWN_TIERS = [15, 30, 60, 300]  # Seconds: 15s, 30s, 1min, 5min
+COOLDOWN_DECAY_TIME = 600  # 10 minutes without violations resets to level 0
+
+# AI REQUEST QUEUE: Queue-based AI execution to prevent failures under load
+AI_REQUEST_QUEUE = None  # Initialized in MyBot.__init__ as asyncio.Queue
+AI_QUEUE_MAX_SIZE = 100  # Prevent memory overflow
+AI_QUEUE_MAX_PER_USER = 3  # Max pending requests per user to prevent spam
+AI_QUEUE_PROCESSOR_RUNNING = False  # Track if worker is active
 
 # Compliment cooldowns with auto-cleanup
 COMPLIMENT_COOLDOWNS = {}
@@ -73,6 +84,21 @@ QUEST_COOLDOWN = 43200
 # Error logging cooldown (prevent rate limiting Discord)
 ERROR_LOG_COOLDOWN = {}
 ERROR_LOG_COOLDOWN_DURATION = 5
+
+# RATE LIMIT SAFETY: Global command cooldown (per user, 3s minimum between ANY command)
+GLOBAL_COMMAND_COOLDOWN = {}
+GLOBAL_COMMAND_COOLDOWN_DURATION = 3
+
+# RATE LIMIT SAFETY: AI call semaphore (max 2 concurrent AI requests globally)
+AI_SEMAPHORE = None  # Initialized in MyBot.__init__
+
+# RATE LIMIT SAFETY: Message edit throttle (1 edit per 5 seconds per message)
+LAST_MESSAGE_EDIT = {}
+MESSAGE_EDIT_COOLDOWN = 5
+
+# RATE LIMIT SAFETY: Supabase write debouncing (prevent rapid-fire saves)
+LAST_SAVE_TIME = 0
+SAVE_DEBOUNCE_DURATION = 2  # Minimum 2 seconds between saves
 
 # Startup tracking for uptime
 START_TIME = time.time()
@@ -199,8 +225,17 @@ def load_data():
         }
 
 def save_data(data):
-    """Save bot state to Supabase."""
+    """Save bot state to Supabase with debouncing to prevent rate limiting."""
+    global LAST_SAVE_TIME
+    
+    # RATE LIMIT SAFETY: Debounce - skip if saved too recently
+    now = time.time()
+    if (now - LAST_SAVE_TIME) < SAVE_DEBOUNCE_DURATION:
+        return  # Skip this save, too soon after last one
+    
     try:
+        LAST_SAVE_TIME = now
+        
         # Prepare update payload with all fields
         update_payload = {
             "tickets": data.get("tickets", {}),
@@ -235,43 +270,45 @@ LORE_CONTEXT = (
 )
 
 async def run_huggingface(prompt: str) -> str:
-    """Call OpenRouter API with corrupting mode Easter egg (5% chance for eerie responses)."""
-    try:
-        loop = asyncio.get_running_loop()
-        def call():
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
-            
-            # Randomly add corrupting mode trigger (5% chance for eerie responses)
-            corrupting_trigger = ""
-            if random.random() < 0.05:
-                corrupting_trigger = " (Respond with slight strangeness and eeriness as if your signals are corrupted)"
-            
-            payload = {
-                "model": AI_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Nimbror Watcher AI. Use the provided lore. "
-                            "Respond in one paragraph, maximum 4 short sentences. "
-                            "Be unsettling, cryptic, and slightly threatening. "
-                            "No markdown beyond what the user supplies." + corrupting_trigger
-                        )
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 300
-            }
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"].strip()
-        return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
-    except Exception as e:
-        print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
-        return "🛰️ *[SIGNAL LOST]*"
+    """Call OpenRouter API with corrupting mode Easter egg (5% chance for eerie responses). RATE LIMITED via semaphore."""
+    # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
+    async with AI_SEMAPHORE:
+        try:
+            loop = asyncio.get_running_loop()
+            def call():
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                
+                # Randomly add corrupting mode trigger (5% chance for eerie responses)
+                corrupting_trigger = ""
+                if random.random() < 0.05:
+                    corrupting_trigger = " (Respond with slight strangeness and eeriness as if your signals are corrupted)"
+                
+                payload = {
+                    "model": AI_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are the Nimbror Watcher AI. Use the provided lore. "
+                                "Respond in one paragraph, maximum 4 short sentences. "
+                                "Be unsettling, cryptic, and slightly threatening. "
+                                "No markdown beyond what the user supplies." + corrupting_trigger
+                            )
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 300
+                }
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+            return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
+        except Exception as e:
+            print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+            return "🛰️ *[SIGNAL LOST]*"
 
 # --- DISCORD BOT ---
 class MyBot(discord.Client):
@@ -282,6 +319,11 @@ class MyBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.db = load_data()
+        
+        # RATE LIMIT SAFETY: Initialize global AI semaphore (max 2 concurrent AI calls)
+        global AI_SEMAPHORE, AI_REQUEST_QUEUE
+        AI_SEMAPHORE = asyncio.Semaphore(2)
+        AI_REQUEST_QUEUE = asyncio.Queue(maxsize=AI_QUEUE_MAX_SIZE)
 
     async def setup_hook(self):
         try:
@@ -435,9 +477,9 @@ class MyBot(discord.Client):
         except Exception as e:
             await log_error(f"dynamic_social_credit_events: {traceback.format_exc()}")
     
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=5)  # RATE LIMIT SAFETY: Reduced frequency from 1min to 5min
     async def trial_timeout_check(self):
-        """Check for trials that have expired and close them."""
+        """Check for trials that have expired and close them (runs every 5 minutes)."""
         try:
             current_time = time.time()
             trial_duration = 120  # 2 minutes
@@ -481,15 +523,16 @@ class MyBot(discord.Client):
                                     "Signal integrity nominal.\nOperations returning to normal.",
                                     color=EMBED_COLORS["success"]
                                 )
-                            await ch.send(embed=embed)
+                            # RATE LIMIT SAFETY: Suppress all mentions on automated announcement
+                            await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                     except Exception as e:
                         print(f"⚠️ Corruption announcement error: {e}")
         except Exception as e:
             await log_error(f"corruption_monitor: {traceback.format_exc()}")
     
-    @tasks.loop(minutes=1)
+    @tasks.loop(minutes=30)  # RATE LIMIT SAFETY: Reduced from 1min to 30min to prevent Discord API spam
     async def uptime_update_loop(self):
-        """Update uptime embed in announce channel every minute."""
+        """Update uptime embed in announce channel every 30 minutes (was 1 minute - changed to prevent rate limiting)."""
         try:
             global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID
             
@@ -503,7 +546,8 @@ class MyBot(discord.Client):
                 
                 msg = await channel.fetch_message(UPTIME_MESSAGE_ID)
                 uptime_embed = create_uptime_embed()
-                await msg.edit(embed=uptime_embed)
+                # RATE LIMIT SAFETY: Suppress all mentions on edit
+                await msg.edit(embed=uptime_embed, allowed_mentions=discord.AllowedMentions.none())
             except discord.NotFound:
                 # Message was deleted, clear tracking
                 UPTIME_MESSAGE_ID = None
@@ -522,6 +566,94 @@ class MyBot(discord.Client):
             # Just update internal state; no Discord or Supabase writes
         except Exception as e:
             pass  # Silent failure to avoid spam
+    
+    @tasks.loop(seconds=1)
+    async def ai_queue_processor(self):
+        """QUEUE-BASED AI: Process AI requests from queue with rate limit resilience."""
+        global AI_QUEUE_PROCESSOR_RUNNING
+        
+        if not AI_REQUEST_QUEUE or AI_REQUEST_QUEUE.empty():
+            return
+        
+        AI_QUEUE_PROCESSOR_RUNNING = True
+        
+        try:
+            # Get next request (non-blocking)
+            try:
+                request = AI_REQUEST_QUEUE.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            
+            user_id = request.get("user_id")
+            channel_id = request.get("channel_id")
+            prompt = request.get("prompt")
+            context = request.get("context", "unknown")
+            created_at = request.get("created_at", time.time())
+            retry_count = request.get("retry_count", 0)
+            
+            # Check if request is too old (>2 minutes), discard it
+            if (time.time() - created_at) > 120:
+                print(f"⚠️ Discarding stale AI request from user {user_id} (age: {int(time.time() - created_at)}s)")
+                return
+            
+            # Execute AI call with semaphore protection
+            async with AI_SEMAPHORE:
+                try:
+                    # Call appropriate AI function based on context
+                    if context in ["mention", "ticket"]:
+                        result = await run_huggingface(prompt)
+                    else:
+                        result = await run_huggingface_concise(prompt)
+                    
+                    # Apply corruption if active (for ticket context)
+                    if context == "ticket" and should_enable_corruption():
+                        result = corrupt_message(result)
+                    
+                    # Send result to channel
+                    try:
+                        channel = bot.get_channel(channel_id)
+                        if channel and result:
+                            # Format based on context
+                            if context == "ticket":
+                                # Send as embed for tickets
+                                embed = create_embed("🛰️ WATCHER RESPONSE", result[:1900], color=EMBED_COLORS["info"])
+                                await channel.send(embed=embed)
+                            else:
+                                # Send as plain text for mentions
+                                result = clamp_response(result, max_chars=500)
+                                await channel.send(result[:2000], allowed_mentions=discord.AllowedMentions.none())
+                    except Exception as e:
+                        print(f"⚠️ Failed to send queued AI response: {e}")
+                    
+                except requests.exceptions.HTTPError as e:
+                    # Handle 429 rate limit from OpenRouter
+                    if e.response and e.response.status_code == 429:
+                        escalate_cooldown(user_id, "openrouter_429")
+                        
+                        # Requeue ONCE with backoff
+                        if retry_count == 0:
+                            print(f"⚠️ OpenRouter 429 for user {user_id}, requeuing with backoff...")
+                            await asyncio.sleep(5)  # Backoff before requeue
+                            request["retry_count"] = 1
+                            try:
+                                AI_REQUEST_QUEUE.put_nowait(request)
+                            except:
+                                pass  # Queue full, drop request
+                        else:
+                            print(f"⚠️ OpenRouter 429 for user {user_id}, max retries reached, dropping request")
+                    else:
+                        print(f"⚠️ AI HTTP error for user {user_id}: {e}")
+                
+                except Exception as e:
+                    print(f"⚠️ AI queue processor error for user {user_id}: {e}")
+                
+                # Brief sleep between requests to prevent API spam
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            print(f"⚠️ AI queue processor critical error: {e}")
+        finally:
+            AI_QUEUE_PROCESSOR_RUNNING = False
 
 bot = MyBot()
 
@@ -573,6 +705,94 @@ def cleanup_expired_cooldowns():
     for uid in list(COMPLIMENT_COOLDOWNS.keys()):
         if (now - COMPLIMENT_COOLDOWNS[uid]) > 3900:
             del COMPLIMENT_COOLDOWNS[uid]
+    # RATE LIMIT SAFETY: Global command cooldowns cleanup
+    for uid in list(GLOBAL_COMMAND_COOLDOWN.keys()):
+        if (now - GLOBAL_COMMAND_COOLDOWN[uid]) > (GLOBAL_COMMAND_COOLDOWN_DURATION + 5):
+            del GLOBAL_COMMAND_COOLDOWN[uid]
+
+def get_adaptive_cooldown_state(user_id: int) -> dict:
+    """Get or create adaptive cooldown state for a user."""
+    uid = str(user_id)
+    if uid not in AI_COOLDOWN_STATE:
+        AI_COOLDOWN_STATE[uid] = {
+            "level": 0,
+            "last_violation": 0,
+            "cooldown_until": 0
+        }
+    return AI_COOLDOWN_STATE[uid]
+
+def check_adaptive_cooldown(user_id: int) -> tuple[bool, int, int]:
+    """Check adaptive AI cooldown. Returns (is_ready, remaining_seconds, current_level)."""
+    now = time.time()
+    state = get_adaptive_cooldown_state(user_id)
+    
+    # Decay cooldown level if user has been good for 10 minutes
+    if state["last_violation"] > 0 and (now - state["last_violation"]) > COOLDOWN_DECAY_TIME:
+        state["level"] = max(0, state["level"] - 1)
+        state["last_violation"] = now
+    
+    # Check if still on cooldown
+    if now < state["cooldown_until"]:
+        remaining = int(state["cooldown_until"] - now)
+        return (False, remaining, state["level"])
+    
+    return (True, 0, state["level"])
+
+def escalate_cooldown(user_id: int, reason: str = "rate_limit"):
+    """Escalate user's AI cooldown level due to violation."""
+    now = time.time()
+    state = get_adaptive_cooldown_state(user_id)
+    
+    # Increase level (cap at 3)
+    state["level"] = min(3, state["level"] + 1)
+    state["last_violation"] = now
+    
+    # Apply cooldown based on tier
+    cooldown_duration = ADAPTIVE_COOLDOWN_TIERS[state["level"]]
+    state["cooldown_until"] = now + cooldown_duration
+    
+    print(f"⚠️ User {user_id} escalated to cooldown level {state['level']} ({cooldown_duration}s) - Reason: {reason}")
+
+def count_user_pending_requests(user_id: int) -> int:
+    """Count how many AI requests are pending in queue for a user."""
+    if not AI_REQUEST_QUEUE:
+        return 0
+    
+    count = 0
+    # Create temporary list to count without modifying queue
+    temp_items = []
+    try:
+        while not AI_REQUEST_QUEUE.empty():
+            item = AI_REQUEST_QUEUE.get_nowait()
+            temp_items.append(item)
+            if item.get("user_id") == user_id:
+                count += 1
+    except:
+        pass
+    finally:
+        # Restore queue
+        for item in temp_items:
+            try:
+                AI_REQUEST_QUEUE.put_nowait(item)
+            except:
+                pass
+    
+    return count
+
+def check_command_cooldown(user_id: int) -> tuple[bool, int]:
+    """RATE LIMIT SAFETY: Check if user is on global command cooldown. Returns (is_ready, remaining_seconds)."""
+    now = time.time()
+    uid = str(user_id)
+    
+    if uid in GLOBAL_COMMAND_COOLDOWN:
+        elapsed = now - GLOBAL_COMMAND_COOLDOWN[uid]
+        if elapsed < GLOBAL_COMMAND_COOLDOWN_DURATION:
+            remaining = int(GLOBAL_COMMAND_COOLDOWN_DURATION - elapsed)
+            return (False, remaining)
+    
+    # Ready to execute
+    GLOBAL_COMMAND_COOLDOWN[uid] = now
+    return (True, 0)
 
 async def safe_send_dm(user: discord.User, embed: discord.Embed = None, content: str = None) -> bool:
     """Safely send DM with error suppression. Returns True if sent."""
@@ -582,6 +802,47 @@ async def safe_send_dm(user: discord.User, embed: discord.Embed = None, content:
     except discord.Forbidden:
         print(f"⚠️ Cannot DM {user}")
         return False
+
+async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: str) -> tuple[bool, str]:
+    """
+    QUEUE-BASED AI: Queue an AI request instead of executing immediately.
+    Returns (success: bool, message: str)
+    """
+    # Check adaptive cooldown
+    is_ready, remaining, level = check_adaptive_cooldown(user_id)
+    
+    if not is_ready:
+        if level >= 3:
+            return (False, f"⏸️ AI temporarily paused for your account. Please wait {remaining}s.")
+        else:
+            return (False, f"⏳ Please wait {remaining}s before your next AI request.")
+    
+    # Check queue flooding (max 3 pending per user)
+    pending = count_user_pending_requests(user_id)
+    if pending >= AI_QUEUE_MAX_PER_USER:
+        escalate_cooldown(user_id, "queue_flood")
+        return (False, "⚠️ Too many pending requests. Please wait for current requests to complete.")
+    
+    # Try to queue the request
+    try:
+        if AI_REQUEST_QUEUE.full():
+            return (False, "⚠️ AI system is currently overloaded. Please try again in a moment.")
+        
+        request = {
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "prompt": prompt,
+            "context": context,
+            "created_at": time.time(),
+            "retry_count": 0
+        }
+        
+        AI_REQUEST_QUEUE.put_nowait(request)
+        return (True, "🕒 Your request is queued. Processing...")
+    
+    except Exception as e:
+        print(f"⚠️ Failed to queue AI request: {e}")
+        return (False, "⚠️ Unable to queue request. Please try again.")
 
 async def safe_get_channel(channel_id: int) -> Optional[discord.TextChannel]:
     """Get channel safely, returns None if invalid/unreachable."""
@@ -707,12 +968,18 @@ async def log_interview_complete(user_id: int, user_mention: str, score_total: i
         if not ch:
             return
         
-        # Build Q&A summary
+        # Build Q&A summary with full answers
         qa_lines = []
         for i, (q, ans) in enumerate(zip(questions_list[:10], answers_list[:10]), 1):
-            qa_lines.append(f"**Q{i}:** {q[:100]}\n**A{i}:** {ans[:100]}")
+            qa_lines.append(f"**Q{i}:** {q[:150]}")
+            qa_lines.append(f"**A{i}:** {ans[:300]}")
+            qa_lines.append("")  # Empty line for spacing
         
-        qa_summary = "\n\n".join(qa_lines[:10])
+        qa_summary = "\n".join(qa_lines[:3000])  # Discord embed field limit
+        
+        # Fallback if summary is empty
+        if not qa_summary or len(qa_summary.strip()) < 10:
+            qa_summary = f"Interview completed with {len(answers_list)} answers provided."
         
         # Create final summary embed
         summary_embed = discord.Embed(
@@ -767,16 +1034,20 @@ async def send_interview_ai_summary(user_id: int, user_mention: str, score_total
         # Generate AI summary
         ai_analysis = await generate_interview_summary(user_id, score_total, total_questions, answers_list, questions_list)
         
+        # Ensure we have content
+        if not ai_analysis or len(ai_analysis.strip()) < 10:
+            ai_analysis = f"Interview completed with score {score_total}/{total_questions}. {'Passed screening successfully.' if passed else 'Did not meet minimum threshold.'}"
+        
         # Create summary embed with AI analysis
         summary_embed = discord.Embed(
             title="🤖 AI INTERVIEW ANALYSIS",
             color=0x00ff00 if passed else 0xff0000,
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            description=f"**Automated Analysis:**\n{ai_analysis[:2048]}"
         )
         summary_embed.add_field(name="User ID", value=f"`{user_id}`", inline=True)
         summary_embed.add_field(name="User", value=user_mention, inline=True)
         summary_embed.add_field(name="Final Score", value=f"`{score_total}/{total_questions}`", inline=True)
-        summary_embed.add_field(name="AI Analysis", value=ai_analysis[:1024], inline=False)
         summary_embed.add_field(name="Status", value="✅ PASSED" if passed else "❌ FAILED/UNDER REVIEW", inline=False)
         summary_embed.set_footer(text="NIMBROR WATCHER v6.5 • AI ANALYSIS")
         
@@ -1657,38 +1928,40 @@ def clamp_response(text: str, max_chars: int = 500) -> str:
 
 # --- CONCISE AI MODE ---
 async def run_huggingface_concise(prompt: str) -> str:
-    """Call OpenRouter API with strict constraints for ping replies."""
-    try:
-        loop = asyncio.get_running_loop()
-        def call():
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {AI_API_KEY}"}
-            
-            payload = {
-                "model": AI_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are the Nimbror Watcher. Be unsettling, cryptic, and slightly threatening. "
-                            "No friendliness. Speak like a paranoid surveillance AI. "
-                            "Plain text only—no markdown, no emojis, no lists. "
-                            "Keep it tight: 1-4 short sentences max."
-                        )
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 120
-            }
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"].strip()
-        return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
-    except Exception as e:
-        print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
-        return "[SIGNAL LOST]"
+    """Call OpenRouter API with strict constraints for ping replies. RATE LIMITED via semaphore."""
+    # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
+    async with AI_SEMAPHORE:
+        try:
+            loop = asyncio.get_running_loop()
+            def call():
+                url = "https://openrouter.ai/api/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                
+                payload = {
+                    "model": AI_MODEL,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are the Nimbror Watcher. Be unsettling, cryptic, and slightly threatening. "
+                                "No friendliness. Speak like a paranoid surveillance AI. "
+                                "Plain text only—no markdown, no emojis, no lists. "
+                                "Keep it tight: 1-4 short sentences max."
+                            )
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 120
+                }
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+            return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
+        except Exception as e:
+            print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+            return "[SIGNAL LOST]"
 
 # --- COMMANDS ---
 @bot.tree.command(name="help", description="List all Watcher commands")
@@ -1735,6 +2008,7 @@ async def help_cmd(interaction: discord.Interaction):
         "`/notes @user` — View staff ticket notes\n"
         "`/memory [view/clear] @user` — Manage AI memory\n"
         "`/memorydump [section]` — View database\n"
+        "`/announce` — Send Discohook JSON announcement with embeds/buttons\n"
     )
     embed = create_embed(
         "Commands",
@@ -1803,7 +2077,7 @@ async def debug(interaction: discord.Interaction):
 @bot.tree.command(name="restart", description="Restart the system (admin only)")
 @app_commands.checks.has_permissions(administrator=True)
 async def restart(interaction: discord.Interaction):
-    """Show a satisfying fake restart progress bar."""
+    """Clear all caches, reset AI cooldowns, and reinitialize systems."""
     await interaction.response.defer()
     
     progress_stages = [
@@ -1825,18 +2099,47 @@ async def restart(interaction: discord.Interaction):
     
     msg = await interaction.followup.send(embed=restart_embed)
     
-    for stage, delay in progress_stages:
+    # Actually perform cache clearing operations between progress updates
+    for i, (stage, delay) in enumerate(progress_stages):
         await asyncio.sleep(delay)
         restart_embed.description = stage
         await msg.edit(embed=restart_embed)
+        
+        # Perform actual clearing operations at specific stages
+        if i == 1:  # FLUSHING stage
+            AI_COOLDOWN.clear()
+            AI_COOLDOWN_STATE.clear()  # Clear adaptive cooldown states
+            COMPLIMENT_COOLDOWNS.clear()
+            GLOBAL_COMMAND_COOLDOWN.clear()
+        elif i == 3:  # CLEARING stage
+            LAST_MESSAGE_EDIT.clear()
+            ERROR_LOG_COOLDOWN.clear()
+            # Clear AI queue
+            if AI_REQUEST_QUEUE:
+                while not AI_REQUEST_QUEUE.empty():
+                    try:
+                        AI_REQUEST_QUEUE.get_nowait()
+                    except:
+                        break
+        elif i == 4:  # REINIT stage
+            # Reload bot data from Supabase
+            bot.db = load_data()
     
     await asyncio.sleep(0.3)
     final_embed = discord.Embed(
-        title="Restart Complete",
-        description="All systems nominal.\nReady to observe.",
+        title="✅ Restart Complete",
+        description=(
+            "All systems nominal. Ready to observe.\n\n"
+            "**Cleared:**\n"
+            "• AI cooldowns reset (adaptive system cleared)\n"
+            "• AI request queue flushed\n"
+            "• Command cooldowns cleared\n"
+            "• Error log cache flushed\n"
+            "• Bot state reloaded from database"
+        ),
         color=EMBED_COLORS["success"]
     )
-    final_embed.set_footer(text="NIMBROR WATCHER v6.5")
+    final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SYSTEMS OPERATIONAL")
     await msg.edit(embed=final_embed)
 
 @bot.tree.command(name="notes", description="View staff notes for a user")
@@ -2124,6 +2427,15 @@ async def prophecy(interaction: discord.Interaction):
 async def shop(interaction: discord.Interaction):
     """Display shop items with user credit and tier info."""
     user_id = str(interaction.user.id)
+    
+    # RATE LIMIT SAFETY: Check global command cooldown
+    is_ready, remaining = check_command_cooldown(interaction.user.id)
+    if not is_ready:
+        await interaction.response.send_message(
+            embed=create_embed("⏳ Cooldown", f"Please wait {remaining}s before using another command.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
     
     # Check if untrusted
     if await is_user_untrusted(user_id):
@@ -2822,6 +3134,242 @@ async def whisper(interaction: discord.Interaction, message: str):
             await interaction.followup.send("❌ Send failed.", ephemeral=True)
     else:
         await interaction.followup.send("❌ No announce channel.", ephemeral=True)
+@bot.tree.command(name="announce", description="[ADMIN] Send a Discohook-style announcement embed")
+@app_commands.describe(
+    channel="Target channel for the announcement",
+    json="Discohook JSON file containing embeds",
+    silent="Suppress all mentions (default: true)",
+    pin="Pin the announcement message (default: false)"
+)
+async def announce(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    json: discord.Attachment,
+    silent: bool = True,
+    pin: bool = False
+):
+    """Parse Discohook JSON and send as announcement with Watcher enhancements."""
+    
+    # RATE LIMIT SAFETY: Check command cooldown
+    is_ready, remaining = check_command_cooldown(interaction.user.id)
+    if not is_ready:
+        await interaction.response.send_message(
+            embed=create_embed("⏳ Cooldown", f"Please wait {remaining}s before using another command.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+    
+    # Permission check: Bot owner OR admin
+    owner_id = 765028951541940225
+    is_owner = interaction.user.id == owner_id
+    is_admin = interaction.user.guild_permissions.administrator if hasattr(interaction.user, 'guild_permissions') else False
+    
+    if not (is_owner or is_admin):
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "This command requires administrator permissions.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Validate file
+        if not json.filename.endswith('.json'):
+            await interaction.followup.send(
+                embed=create_embed("❌ Invalid File", "Please upload a .json file.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Check file size (max 256KB for safety)
+        if json.size > 262144:
+            await interaction.followup.send(
+                embed=create_embed("❌ File Too Large", "JSON file must be under 256KB.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Download and parse JSON
+        json_bytes = await json.read()
+        json_data = json_bytes.decode('utf-8')
+        
+        try:
+            parsed = __import__('json').loads(json_data)
+        except __import__('json').JSONDecodeError as e:
+            await interaction.followup.send(
+                embed=create_embed("❌ Malformed JSON", f"Parse error: {str(e)[:200]}", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Extract Discohook data
+        content = parsed.get("content", "")
+        embeds_data = parsed.get("embeds", [])
+        
+        # Validate embed count (Discord limit: 10)
+        if len(embeds_data) > 10:
+            await interaction.followup.send(
+                embed=create_embed("❌ Too Many Embeds", "Discord allows maximum 10 embeds per message.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+            return
+        
+        # Convert Discohook embeds to Discord embeds
+        discord_embeds = []
+        for embed_data in embeds_data:
+            try:
+                embed = discord.Embed()
+                
+                # Basic properties
+                if "title" in embed_data:
+                    embed.title = embed_data["title"][:256]
+                
+                if "description" in embed_data:
+                    embed.description = embed_data["description"][:4096]
+                
+                if "url" in embed_data:
+                    embed.url = embed_data["url"]
+                
+                if "color" in embed_data:
+                    # Discohook uses integer colors
+                    embed.color = embed_data["color"]
+                
+                # WATCHER ENHANCEMENT: Auto-inject timestamp if missing
+                if "timestamp" in embed_data:
+                    # Parse ISO timestamp from Discohook
+                    try:
+                        embed.timestamp = datetime.fromisoformat(embed_data["timestamp"].replace("Z", "+00:00"))
+                    except:
+                        embed.timestamp = datetime.utcnow()
+                else:
+                    embed.timestamp = datetime.utcnow()
+                
+                # Author
+                if "author" in embed_data:
+                    author = embed_data["author"]
+                    embed.set_author(
+                        name=author.get("name", "")[:256],
+                        url=author.get("url"),
+                        icon_url=author.get("icon_url")
+                    )
+                
+                # Footer (with WATCHER signature)
+                if "footer" in embed_data:
+                    footer = embed_data["footer"]
+                    footer_text = footer.get("text", "")[:2048]
+                    # WATCHER ENHANCEMENT: Add invisible zero-width signature
+                    footer_text += "\u200b"  # Zero-width space marks as Watcher-issued
+                    embed.set_footer(
+                        text=footer_text,
+                        icon_url=footer.get("icon_url")
+                    )
+                else:
+                    # Add default Watcher footer if none provided
+                    embed.set_footer(text="NIMBROR WATCHER v6.5\u200b")
+                
+                # Thumbnail
+                if "thumbnail" in embed_data and "url" in embed_data["thumbnail"]:
+                    embed.set_thumbnail(url=embed_data["thumbnail"]["url"])
+                
+                # Image
+                if "image" in embed_data and "url" in embed_data["image"]:
+                    embed.set_image(url=embed_data["image"]["url"])
+                
+                # Fields
+                if "fields" in embed_data:
+                    for field in embed_data["fields"][:25]:  # Discord max 25 fields
+                        embed.add_field(
+                            name=field.get("name", "")[:256],
+                            value=field.get("value", "")[:1024],
+                            inline=field.get("inline", False)
+                        )
+                
+                discord_embeds.append(embed)
+                
+            except Exception as e:
+                print(f"⚠️ Embed conversion error: {e}")
+                continue
+        
+        # Build buttons/components if present
+        view = None
+        if "components" in parsed:
+            try:
+                view = discord.ui.View(timeout=None)
+                for component_row in parsed["components"][:5]:  # Discord max 5 action rows
+                    if component_row.get("type") == 1:  # Action row
+                        for component in component_row.get("components", [])[:5]:  # Max 5 buttons per row
+                            if component.get("type") == 2:  # Button
+                                style_map = {1: discord.ButtonStyle.primary, 2: discord.ButtonStyle.secondary, 3: discord.ButtonStyle.success, 4: discord.ButtonStyle.danger, 5: discord.ButtonStyle.link}
+                                style = style_map.get(component.get("style", 2), discord.ButtonStyle.secondary)
+                                
+                                # Link button
+                                if style == discord.ButtonStyle.link and "url" in component:
+                                    button = discord.ui.Button(
+                                        label=component.get("label", "Link")[:80],
+                                        url=component["url"],
+                                        emoji=component.get("emoji")
+                                    )
+                                    view.add_item(button)
+            except Exception as e:
+                print(f"⚠️ Component parsing error: {e}")
+                view = None
+        
+        # Send the announcement with WATCHER SAFETY
+        try:
+            # RATE LIMIT SAFETY: Always suppress mentions
+            allowed_mentions = discord.AllowedMentions.none()
+            
+            sent_message = await channel.send(
+                content=content[:2000] if content else None,
+                embeds=discord_embeds if discord_embeds else None,
+                view=view,
+                allowed_mentions=allowed_mentions
+            )
+            
+            # Pin if requested
+            if pin:
+                try:
+                    await sent_message.pin()
+                except Exception as e:
+                    print(f"⚠️ Pin failed: {e}")
+            
+            # Success response
+            success_embed = discord.Embed(
+                title="✅ Announcement Sent",
+                color=EMBED_COLORS["success"],
+                timestamp=datetime.utcnow()
+            )
+            success_embed.add_field(name="Channel", value=channel.mention, inline=True)
+            success_embed.add_field(name="Message ID", value=f"`{sent_message.id}`", inline=True)
+            success_embed.add_field(name="Embeds", value=str(len(discord_embeds)), inline=True)
+            if pin:
+                success_embed.add_field(name="Pinned", value="✅ Yes", inline=True)
+            success_embed.set_footer(text="NIMBROR WATCHER v6.5 • ANNOUNCEMENT SYSTEM")
+            
+            await interaction.followup.send(embed=success_embed, ephemeral=True)
+            
+        except discord.Forbidden:
+            await interaction.followup.send(
+                embed=create_embed("❌ Permission Denied", "Bot lacks permission to send messages in that channel.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                embed=create_embed("❌ Send Failed", f"Error: {str(e)[:200]}", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+    
+    except Exception as e:
+        await log_error(f"announce command error: {traceback.format_exc()}")
+        try:
+            await interaction.followup.send(
+                embed=create_embed("❌ Command Failed", "An unexpected error occurred.", color=EMBED_COLORS["error"]),
+                ephemeral=True
+            )
+        except:
+            pass
+
 
 # --- EVENTS ---
 @bot.event
@@ -2834,6 +3382,27 @@ async def on_ready():
     
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
+    
+    # Start background tasks
+    try:
+        if not bot.uptime_update_loop.is_running():
+            bot.uptime_update_loop.start()
+        if not bot.internal_keepalive_loop.is_running():
+            bot.internal_keepalive_loop.start()
+        if not bot.corruption_monitor.is_running():
+            bot.corruption_monitor.start()
+        if not bot.trial_timeout_check.is_running():
+            bot.trial_timeout_check.start()
+        if not bot.quest_reset_loop.is_running():
+            bot.quest_reset_loop.start()
+        if not bot.task_expiration_check.is_running():
+            bot.task_expiration_check.start()
+        # QUEUE-BASED AI: Start AI queue processor
+        if not bot.ai_queue_processor.is_running():
+            bot.ai_queue_processor.start()
+            print("✅ AI queue processor started")
+    except Exception as e:
+        print(f"⚠️ Failed to start background tasks: {e}")
     
     # Send startup announcement to announce channel only; never broadcast
     # If channel is missing or invalid, silently skip (no fallbacks)
@@ -3214,32 +3783,49 @@ async def on_message(message):
                 except Exception as e:
                     print(f"⚠️ Staff channel send error: {e}")
             
-            # AI Response
-            async with message.channel.typing():
-                # Build custom instruction context (hide specific user instructions from the mentioned user)
-                custom_instructions = bot.db.get("custom_instructions", {})
-                custom_context = ""
-                for user_id_key, instruction in custom_instructions.items():
-                    if user_id_key != uid:  # Don't include their own custom instruction
-                        custom_context += f"{instruction} "
-                
-                ai_response = await run_huggingface(
-                    f"{LORE_CONTEXT}\n"
-                    f"AI Memory for this user: {bot.db.get('memory', {}).get(uid, {})}\n"
-                    f"Custom instructions: {custom_context}\n"
-                    f"User says: {message.content[:500]}"
-                )
-                
-                # Apply corruption if corruption mode is active
-                if should_enable_corruption():
-                    ai_response = corrupt_message(ai_response)
-                
-                # Store in memory and track engagement
-                add_memory(uid, "interaction", f"Ticket message: {message.content[:100]}")
-                update_social_credit(uid, len(message.content) // 50)
-                
-                embed = create_embed("🛰️ WATCHER RESPONSE", ai_response[:1900], color=EMBED_COLORS["info"])
+            # AI Response - QUEUE-BASED
+            user_id = message.author.id
+            
+            # Check adaptive cooldown
+            is_ready, remaining, level = check_adaptive_cooldown(user_id)
+            
+            if not is_ready:
+                embed = create_embed("⏳ Please Wait", f"AI cooldown active: {remaining}s remaining", color=EMBED_COLORS["warning"])
                 await message.channel.send(embed=embed)
+                return
+            
+            # Build prompt with custom instructions
+            custom_instructions = bot.db.get("custom_instructions", {})
+            custom_context = ""
+            for user_id_key, instruction in custom_instructions.items():
+                if user_id_key != uid:  # Don't include their own custom instruction
+                    custom_context += f"{instruction} "
+            
+            prompt = (
+                f"{LORE_CONTEXT}\n"
+                f"AI Memory for this user: {bot.db.get('memory', {}).get(uid, {})}\n"
+                f"Custom instructions: {custom_context}\n"
+                f"User says: {message.content[:500]}"
+            )
+            
+            # QUEUE-BASED AI: Queue the request
+            success, status_msg = await queue_ai_request(
+                user_id=user_id,
+                channel_id=message.channel.id,
+                prompt=prompt,
+                context="ticket"
+            )
+            
+            if success:
+                async with message.channel.typing():
+                    await asyncio.sleep(0.5)  # Brief typing indicator
+            else:
+                embed = create_embed("⚠️ Request Status", status_msg, color=EMBED_COLORS["warning"])
+                await message.channel.send(embed=embed)
+            
+            # Store in memory and track engagement
+            add_memory(uid, "interaction", f"Ticket message: {message.content[:100]}")
+            update_social_credit(uid, len(message.content) // 50)
             return
 
         # --- Staff reply (>USERID message) ---
@@ -3263,50 +3849,67 @@ async def on_message(message):
         if bot.user and bot.user.mentioned_in(message):
             cleanup_expired_cooldowns()  # Periodic cleanup
             
-            now = time.time()
-            uid_mention = str(message.author.id)
-            if uid_mention in AI_COOLDOWN and (now - AI_COOLDOWN[uid_mention]) < COOLDOWN_DURATION:
-                remaining = int(COOLDOWN_DURATION - (now - AI_COOLDOWN[uid_mention]))
-                elapsed = COOLDOWN_DURATION - remaining
+            user_id = message.author.id
+            uid_mention = str(user_id)
+            
+            # QUEUE-BASED AI: Check adaptive cooldown
+            is_ready, remaining, level = check_adaptive_cooldown(user_id)
+            
+            if not is_ready:
+                # Show cooldown with level indicator
+                if level >= 3:
+                    embed = create_embed("⏸️ AI PAUSED", f"Temporary pause due to rate limiting. Wait: {remaining}s", color=EMBED_COLORS["error"])
+                else:
+                    # Create fancy progress bar
+                    bar_length = 10
+                    cooldown_duration = ADAPTIVE_COOLDOWN_TIERS[level]
+                    elapsed = cooldown_duration - remaining
+                    filled = int(bar_length * elapsed / cooldown_duration) if cooldown_duration > 0 else 0
+                    bar = "■" * filled + "□" * (bar_length - filled)
+                    
+                    embed = create_embed("⏳ COOLDOWN", f"`[{bar}]` {remaining}s remaining (Level {level})")
                 
-                # Create fancy progress bar
-                bar_length = 10
-                filled = int(bar_length * elapsed / COOLDOWN_DURATION)
-                bar = "■" * filled + "□" * (bar_length - filled)
-                
-                embed = create_embed("⏳ COOLDOWN", f"`[{bar}]` {remaining}s remaining")
                 await message.reply(embed=embed, delete_after=5)
+                escalate_cooldown(user_id, "attempt_while_cooldown")
                 return
             
-            AI_COOLDOWN[uid_mention] = now
-            
             try:
-                async with message.channel.typing():
-                    # Build custom instruction context (hide specific user instructions from the mentioned user)
-                    custom_instructions = bot.db.get("custom_instructions", {})
-                    custom_context = ""
-                    for user_id_key, instruction in custom_instructions.items():
-                        if user_id_key != uid_mention:  # Don't include their own custom instruction
-                            custom_context += f"{instruction} "
+                # Build prompt with custom instructions
+                custom_instructions = bot.db.get("custom_instructions", {})
+                custom_context = ""
+                for user_id_key, instruction in custom_instructions.items():
+                    if user_id_key != uid_mention:  # Don't include their own custom instruction
+                        custom_context += f"{instruction} "
+                
+                prompt = f"Custom instructions: {custom_context}\nUser says: {message.content[:200]}"
+                
+                # QUEUE-BASED AI: Queue the request instead of executing immediately
+                success, status_msg = await queue_ai_request(
+                    user_id=user_id,
+                    channel_id=message.channel.id,
+                    prompt=prompt,
+                    context="mention"
+                )
+                
+                if success:
+                    # Show queued status
+                    async with message.channel.typing():
+                        await asyncio.sleep(0.5)  # Brief typing indicator
+                else:
+                    # Show error
+                    await message.reply(status_msg, delete_after=5)
+                
+                # Update memory and credit (with safety)
+                try:
+                    add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
+                    update_social_credit(uid_mention, 1)
+                except Exception as mem_err:
+                    print(f"⚠️ Memory/credit error: {mem_err}")
                     
-                    ai_response = await run_huggingface_concise(
-                        f"Custom instructions: {custom_context}\n"
-                        f"User says: {message.content[:200]}"
-                    )
-                    ai_response = clamp_response(ai_response, max_chars=500)
-                    
-                    # Update memory and credit (with safety)
-                    try:
-                        add_memory(uid_mention, "interaction", f"Mention: {message.content[:100]}")
-                        update_social_credit(uid_mention, 1)
-                    except Exception as mem_err:
-                        print(f"⚠️ Memory/credit error: {mem_err}")
-                    
-                    await message.reply(ai_response)
             except Exception as ping_error:
                 await log_error(f"Ping reply failed: {type(ping_error).__name__}: {str(ping_error)}")
                 try:
-                    await message.reply("👁️ *I am watching...*")
+                    await message.reply("👁️ *[Processing...]*")
                 except:
                     pass
             return
