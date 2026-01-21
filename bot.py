@@ -92,6 +92,11 @@ GLOBAL_COMMAND_COOLDOWN_DURATION = 3
 # Track whether app commands have been synced to Discord (prevents double-sync on reconnects)
 COMMANDS_SYNCED = False
 
+# STARTUP LOCK: Prevent multiple login attempts or concurrent instances
+BOT_LOGIN_ATTEMPTED = False
+BOT_READY = False
+LOGIN_LOCK = asyncio.Lock() if hasattr(asyncio, 'Lock') else None  # Will be initialized properly in async context
+
 # Koyeb auto-redeploy system: track last redeploy time (15 min cooldown)
 LAST_KOYEB_REDEPLOY = 0
 KOYEB_REDEPLOY_COOLDOWN = 900  # 15 minutes in seconds
@@ -377,21 +382,10 @@ class MyBot(discord.Client):
 
     async def setup_hook(self):
         try:
-            print("🛰️ Watcher online")
-            # Start daily quest task and quest timeout checker
-            self.daily_quest_loop.start()
-            self.quest_timeout_check.start()
-            self.dynamic_social_credit_events.start()
-            self.trial_timeout_check.start()
-            self.corruption_monitor.start()
-            # REMOVED: self.internal_keepalive_loop.start() - unnecessary timestamp updates
-            # Start Koyeb auto-redeploy if credentials are configured
-            if KOYEB_APP_ID and KOYEB_API_TOKEN:
-                self.koyeb_auto_redeploy.start()
-                print("🔄 Koyeb auto-redeploy enabled (15min interval)")
-            if not COMMANDS_SYNCED:
-                await sync_app_commands()
-                self.synced = COMMANDS_SYNCED
+            print("🛰️ Bot connecting to Discord (setup_hook)...")
+            # NOTE: Background tasks are NOT started here
+            # Tasks will only start AFTER on_ready fires (confirms successful login)
+            # Command sync will happen in on_ready (ensures single attempt)
         except Exception as e:
             print(f"⚠️ setup_hook error: {e}")
             await log_error(f"setup_hook: {traceback.format_exc()}")
@@ -3613,15 +3607,13 @@ async def announce(
 @bot.event
 async def on_ready():
     """Bot connected and ready."""
-    global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID, COMMANDS_SYNCED
+    global UPTIME_MESSAGE_ID, UPTIME_CHANNEL_ID, COMMANDS_SYNCED, BOT_READY
     
     if not bot.user:
         return
     
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
-    print("🔧 Refactor applied: Removed uptime_update_loop and internal_keepalive_loop")
-    print("   → Preserved: All commands, AI queue, trials, corruption monitor, Koyeb redeploy")
 
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
@@ -3642,19 +3634,38 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
     
-    # Start background tasks
+    # START ALL BACKGROUND TASKS (only called after successful login)
     try:
-        # REMOVED: internal_keepalive_loop - unnecessary overhead
-        if not bot.corruption_monitor.is_running():
-            bot.corruption_monitor.start()
+        if not bot.daily_quest_loop.is_running():
+            bot.daily_quest_loop.start()
+            print("✅ daily_quest_loop started")
+        if not bot.quest_timeout_check.is_running():
+            bot.quest_timeout_check.start()
+            print("✅ quest_timeout_check started")
+        if not bot.dynamic_social_credit_events.is_running():
+            bot.dynamic_social_credit_events.start()
+            print("✅ dynamic_social_credit_events started")
         if not bot.trial_timeout_check.is_running():
             bot.trial_timeout_check.start()
-        # QUEUE-BASED AI: Start AI queue processor
+            print("✅ trial_timeout_check started")
+        if not bot.corruption_monitor.is_running():
+            bot.corruption_monitor.start()
+            print("✅ corruption_monitor started")
         if not bot.ai_queue_processor.is_running():
             bot.ai_queue_processor.start()
-            print("✅ AI queue processor started")
+            print("✅ ai_queue_processor started")
+        # Start Koyeb auto-redeploy if credentials are configured
+        if KOYEB_APP_ID and KOYEB_API_TOKEN:
+            if not bot.koyeb_auto_redeploy.is_running():
+                bot.koyeb_auto_redeploy.start()
+                print("✅ koyeb_auto_redeploy started (15min interval)")
     except Exception as e:
         print(f"⚠️ Failed to start background tasks: {e}")
+        await log_error(f"on_ready task startup: {traceback.format_exc()}")
+    
+    # Mark bot as ready for other systems
+    BOT_READY = True
+    print(f"🟢 BOT_READY = True (all background tasks started)")
     
     # Send startup announcement to announce channel only; never broadcast
     # If channel is missing or invalid, silently skip (no fallbacks)
@@ -4204,12 +4215,28 @@ async def on_message(message):
         await log_error(error_msg)
 
 # --- RUN ---
+print("🚀 Starting Discord bot...")
 try:
-    bot.run(TOKEN)
-except discord.LoginFailure:
-    print("❌ Invalid Discord token")
+    bot.run(TOKEN, reconnect=True)  # Keep reconnect=True for normal operation, but add guard below
+except discord.LoginFailure as e:
+    print(f"❌ Discord login failed (HTTP 429 or invalid token): {e}")
+    print("💤 Bot entering idle sleep (will not retry login - process will remain running)")
+    print("   If this is a rate limit, wait 8-24 hours before restarting.")
+    try:
+        import time
+        while True:
+            time.sleep(3600)  # Sleep 1 hour at a time
+    except KeyboardInterrupt:
+        print("\n🛑 Shutdown via keyboard interrupt")
 except KeyboardInterrupt:
     print("\n🛑 Shutdown")
 except Exception as e:
-    print(f"❌ Critical error: {e}")
+    print(f"❌ Critical error on startup: {type(e).__name__}: {e}")
     traceback.print_exc()
+    print("💤 Bot entering idle sleep (will not retry - process will remain running)")
+    try:
+        import time
+        while True:
+            time.sleep(3600)  # Sleep 1 hour at a time
+    except KeyboardInterrupt:
+        print("\n🛑 Shutdown via keyboard interrupt")
