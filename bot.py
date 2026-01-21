@@ -408,6 +408,11 @@ class MyBot(discord.Client):
         global AI_SEMAPHORE, AI_REQUEST_QUEUE
         AI_SEMAPHORE = asyncio.Semaphore(2)
         AI_REQUEST_QUEUE = asyncio.Queue(maxsize=AI_QUEUE_MAX_SIZE)
+        
+        # SPAM SYSTEM: Track active controlled spam (owner-only)
+        self.active_spam_task = None
+        self.active_spam_target = None
+        self.active_spam_count = 0
 
     async def setup_hook(self):
         try:
@@ -424,6 +429,7 @@ class MyBot(discord.Client):
         """Check if it's time for a daily quest and send to random user."""
         try:
             current_time = int(time.time())
+            last_quest = self.db.get("last_quest_time", 0)
             
             if current_time - last_quest >= QUEST_COOLDOWN:
                 guild = self.guilds[0] if self.guilds else None
@@ -453,8 +459,13 @@ class MyBot(discord.Client):
                 self.db["last_quest_time"] = current_time
                 save_data(self.db)
                 
-                # Send quest via DM
-                await safe_send_dm(quest_user, embed=create_embed("🔮 DAILY QUEST", quest, color=0xff00ff))
+                # Send quest via DM with completion instructions
+                quest_embed = create_embed(
+                    "🔮 DAILY QUEST",
+                    f"{quest}\n\n**How to Complete:**\nUse `/confess` to submit your findings or response to this quest. The Watcher will judge your submission.\n\n⏰ **Time Limit:** 12 hours\n❌ **Penalty:** -5 social credit if ignored",
+                    color=0xff00ff
+                )
+                await safe_send_dm(quest_user, embed=quest_embed)
                 
                 # Log to staff channel
                 if STAFF_CHANNEL_ID:
@@ -2228,6 +2239,8 @@ async def help_cmd(interaction: discord.Interaction):
         "`/announce` — Send Discohook JSON announcement with embeds/buttons\n"
         "`/task` — Receive a micro-quest with reply-to-complete flow\n"
         "`/questforce` — Force-send a quest to a random member (admin)\n"
+        "`/spam @user message` — (Owner only) Controlled ping system\n"
+        "`/stop` — Stop active spam\n"
     )
     embed = create_embed(
         "Commands",
@@ -2409,6 +2422,126 @@ async def restart(interaction: discord.Interaction):
     )
     final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SYSTEMS OPERATIONAL")
     await msg.edit(embed=final_embed)
+
+@bot.tree.command(name="spam", description="[OWNER] Controlled ping system")
+async def spam(interaction: discord.Interaction, user: discord.Member, message: str):
+    """Owner-only controlled spam with rate limiting and auto-stop."""
+    OWNER_ID = 765028951541940225
+    
+    # Owner check
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Owner only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Check if spam already active
+    if bot.active_spam_task and not bot.active_spam_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("⚠️ Spam Active", f"Spam already running for {bot.active_spam_target.mention}. Use `/stop` first.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+    
+    # Confirm start
+    await interaction.response.send_message(
+        embed=create_embed(
+            "✅ Spam Started",
+            f"Spamming {user.mention} every 10 seconds (max 30 messages).\nUse `/stop` to cancel.",
+            color=EMBED_COLORS["success"]
+        ),
+        ephemeral=True
+    )
+    
+    # Start spam task
+    async def spam_loop():
+        """Send one message every 10 seconds with safety checks."""
+        try:
+            bot.active_spam_target = user
+            bot.active_spam_count = 0
+            channel = interaction.channel
+            
+            for i in range(30):  # Max 30 messages
+                # Safety checks
+                if not user.guild:  # User left server
+                    print(f"⚠️ Spam stopped: {user} left server")
+                    break
+                
+                if check_discord_rate_limit():  # Discord rate-limited
+                    print(f"⚠️ Spam stopped: Discord rate-limited")
+                    break
+                
+                # Send message
+                try:
+                    await channel.send(
+                        f"{user.mention} {message}",
+                        allowed_mentions=discord.AllowedMentions(users=[user])
+                    )
+                    bot.active_spam_count += 1
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        set_discord_rate_limited(True)
+                        print(f"❌ Spam stopped: HTTP 429")
+                        break
+                    elif e.status == 403:
+                        print(f"⚠️ Spam stopped: Missing permissions")
+                        break
+                    else:
+                        print(f"⚠️ Spam error: {e}")
+                        break
+                except Exception as e:
+                    print(f"⚠️ Spam error: {e}")
+                    break
+                
+                # Wait 10 seconds before next message
+                await asyncio.sleep(10)
+        
+        except asyncio.CancelledError:
+            print(f"🛑 Spam cancelled by /stop (sent {bot.active_spam_count} messages)")
+        finally:
+            # Clean up state
+            bot.active_spam_task = None
+            bot.active_spam_target = None
+            bot.active_spam_count = 0
+    
+    # Create and store task
+    bot.active_spam_task = asyncio.create_task(spam_loop())
+
+@bot.tree.command(name="stop", description="[OWNER] Stop active spam")
+async def stop(interaction: discord.Interaction):
+    """Cancel the active spam task."""
+    OWNER_ID = 765028951541940225
+    
+    # Owner check
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Owner only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Check if spam is active
+    if not bot.active_spam_task or bot.active_spam_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("ℹ️ No Active Spam", "No spam is currently running.", color=EMBED_COLORS["info"]),
+            ephemeral=True
+        )
+        return
+    
+    # Cancel task
+    bot.active_spam_task.cancel()
+    target_mention = bot.active_spam_target.mention if bot.active_spam_target else "Unknown"
+    count = bot.active_spam_count
+    
+    await interaction.response.send_message(
+        embed=create_embed(
+            "🛑 Spam Stopped",
+            f"Cancelled spam for {target_mention}.\nSent {count} messages.",
+            color=EMBED_COLORS["success"]
+        ),
+        ephemeral=True
+    )
 
 @bot.tree.command(name="notes", description="View staff notes for a user")
 @app_commands.checks.has_permissions(manage_messages=True)
@@ -3336,7 +3469,12 @@ async def questforce(interaction: discord.Interaction):
     bot.db.setdefault("completed_quests", {})[quest_id] = False
     bot.db["last_quest_time"] = int(time.time())  # Maintain 12h cadence from latest dispatch
     save_data(bot.db)
-    await safe_send_dm(quest_user, embed=create_embed("🔮 DAILY QUEST (FORCED)", quest, color=0xff00ff))
+    quest_embed = create_embed(
+        "🔮 DAILY QUEST (FORCED)",
+        f"{quest}\n\n**How to Complete:**\nUse `/confess` to submit your findings or response to this quest. The Watcher will judge your submission.\n\n⏰ **Time Limit:** 12 hours\n❌ **Penalty:** -5 social credit if ignored",
+        color=0xff00ff
+    )
+    await safe_send_dm(quest_user, embed=quest_embed)
     await interaction.followup.send(f"✅ Quest forced to {quest_user.mention}", ephemeral=True)
     if STAFF_CHANNEL_ID:
         try:
