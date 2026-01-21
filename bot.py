@@ -13,6 +13,7 @@ from datetime import timedelta, datetime
 from dotenv import load_dotenv
 from typing import Optional
 from supabase import create_client, Client
+from aiohttp import web
 
 load_dotenv()
 
@@ -102,6 +103,34 @@ LAST_KOYEB_REDEPLOY = 0
 KOYEB_REDEPLOY_COOLDOWN = 900  # 15 minutes in seconds
 KOYEB_REDEPLOY_IN_PROGRESS = False
 
+# DISCORD RATE LIMIT SAFETY: Global 429 handler
+DISCORD_RATE_LIMITED = False
+DISCORD_RATE_LIMITED_TIME = 0
+DISCORD_RATE_LIMITED_TIMEOUT = 900  # 15 minutes in seconds
+HTTP_SERVER = None  # Will hold aiohttp server reference
+
+# HTTP HEALTH CHECK SERVER - Minimal endpoint for Koyeb health checks
+async def health_check_handler(request):
+    """Minimal health check endpoint - returns 200 OK."""
+    return web.Response(text="OK", status=200)
+
+async def start_http_server():
+    """Start minimal aiohttp server on port 8000 for Koyeb health checks."""
+    global HTTP_SERVER
+    try:
+        PORT = int(os.getenv("PORT", 8000))
+        app = web.Application()
+        app.router.add_get("/", health_check_handler)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", PORT)
+        await site.start()
+        HTTP_SERVER = runner
+        print(f"🌐 HTTP health check server running on port {PORT}")
+    except Exception as e:
+        print(f"⚠️ Failed to start HTTP server: {e}")
+
 async def sync_app_commands(guild: Optional[discord.Object] = None) -> int:
     """Sync application commands once; returns count synced."""
     global COMMANDS_SYNCED
@@ -130,7 +159,7 @@ LAST_SAVE_TIME = 0
 SAVE_DEBOUNCE_DURATION = 2  # Minimum 2 seconds between saves
 
 # Startup tracking for uptime
-START_TIME = time.time()
+START_TIME = int(time.time())
 PROCESS_START_TIME = START_TIME  # Monotonic start time for uptime (never resets)
 RECONNECT_COUNT = 0  # Track disconnects
 UPTIME_MESSAGE_ID = None  # Store message ID for embed updates
@@ -283,7 +312,7 @@ def save_data(data):
     global LAST_SAVE_TIME
     
     # RATE LIMIT SAFETY: Debounce - skip if saved too recently
-    now = time.time()
+    now = int(time.time())
     if (now - LAST_SAVE_TIME) < SAVE_DEBOUNCE_DURATION:
         return  # Skip this save, too soon after last one
     
@@ -394,8 +423,7 @@ class MyBot(discord.Client):
     async def daily_quest_loop(self):
         """Check if it's time for a daily quest and send to random user."""
         try:
-            current_time = time.time()
-            last_quest = self.db.get("last_quest_time", 0)
+            current_time = int(time.time())
             
             if current_time - last_quest >= QUEST_COOLDOWN:
                 guild = self.guilds[0] if self.guilds else None
@@ -443,8 +471,7 @@ class MyBot(discord.Client):
     async def quest_timeout_check(self):
         """Check for incomplete quests and penalize users who ignore them."""
         try:
-            current_time = time.time()
-            quest_timeout = 12 * 3600  # 12 hours
+            current_time = int(time.time())
             
             for quest_id, done in list(self.db.get("completed_quests", {}).items()):
                 if not done:
@@ -477,7 +504,7 @@ class MyBot(discord.Client):
         try:
             global LAST_SOCIAL_EVENT, LAST_SOCIAL_EVENT_TIME
             
-            current_time = time.time()
+            current_time = int(time.time())
             activity_threshold = 86400  # 24 hours of inactivity
             
             events = [
@@ -531,7 +558,7 @@ class MyBot(discord.Client):
     async def trial_timeout_check(self):
         """Check for trials that have expired and close them (runs every 5 minutes)."""
         try:
-            current_time = time.time()
+            current_time = int(time.time())
             trial_duration = 120  # 2 minutes
             
             for trial_id, trial_data in list(self.db.get("trials", {}).items()):
@@ -608,9 +635,7 @@ class MyBot(discord.Client):
             print("⚠️ Koyeb redeploy already in progress, skipping")
             return
         
-        # Check cooldown (15 min minimum between redeploys)
-        current_time = time.time()
-        time_since_last = current_time - LAST_KOYEB_REDEPLOY
+        current_time = int(time.time())
         if time_since_last < KOYEB_REDEPLOY_COOLDOWN:
             remaining = int(KOYEB_REDEPLOY_COOLDOWN - time_since_last)
             print(f"⏳ Koyeb redeploy on cooldown: {remaining}s remaining")
@@ -689,7 +714,7 @@ class MyBot(discord.Client):
             channel_id = request.get("channel_id")
             prompt = request.get("prompt")
             context = request.get("context", "unknown")
-            created_at = request.get("created_at", time.time())
+            created_at = request.get("created_at", int(time.time()))
             retry_count = request.get("retry_count", 0)
             placeholder_message_id = request.get("placeholder_message_id")
             
@@ -807,7 +832,7 @@ def create_uptime_embed() -> discord.Embed:
 
 def cleanup_expired_cooldowns():
     """Remove expired cooldowns from tracking dicts to prevent memory leaks."""
-    now = time.time()
+    now = int(time.time())
     # AI cooldowns: remove if older than COOLDOWN_DURATION + 5 seconds grace period
     for uid in list(AI_COOLDOWN.keys()):
         if (now - AI_COOLDOWN[uid]) > (COOLDOWN_DURATION + 5):
@@ -834,7 +859,7 @@ def get_adaptive_cooldown_state(user_id: int) -> dict:
 
 def check_adaptive_cooldown(user_id: int) -> tuple[bool, int, int]:
     """Check adaptive AI cooldown. Returns (is_ready, remaining_seconds, current_level)."""
-    now = time.time()
+    now = int(time.time())
     state = get_adaptive_cooldown_state(user_id)
     
     # Decay cooldown level if user has been good for 10 minutes
@@ -851,7 +876,7 @@ def check_adaptive_cooldown(user_id: int) -> tuple[bool, int, int]:
 
 def escalate_cooldown(user_id: int, reason: str = "rate_limit"):
     """Escalate user's AI cooldown level due to violation."""
-    now = time.time()
+    now = int(time.time())
     state = get_adaptive_cooldown_state(user_id)
     
     # Increase level (cap at 3)
@@ -892,7 +917,7 @@ def count_user_pending_requests(user_id: int) -> int:
 
 def check_command_cooldown(user_id: int) -> tuple[bool, int]:
     """RATE LIMIT SAFETY: Check if user is on global command cooldown. Returns (is_ready, remaining_seconds)."""
-    now = time.time()
+    now = int(time.time())
     uid = str(user_id)
     
     if uid in GLOBAL_COMMAND_COOLDOWN:
@@ -908,11 +933,76 @@ def check_command_cooldown(user_id: int) -> tuple[bool, int]:
 async def safe_send_dm(user: discord.User, embed: discord.Embed = None, content: str = None) -> bool:
     """Safely send DM with error suppression. Returns True if sent."""
     try:
+        # Check rate-limit before sending
+        if check_discord_rate_limit():
+            print(f"⏳ DM blocked due to Discord rate-limit: {user}")
+            return False
+        
         await user.send(embed=embed, content=content)
         return True
+    except discord.HTTPException as e:
+        if e.status == 429:
+            set_discord_rate_limited(True)
+            print(f"❌ HTTP 429 on DM to {user} - rate-limit engaged")
+            return False
+        print(f"⚠️ Cannot DM {user}: {e}")
+        return False
     except discord.Forbidden:
         print(f"⚠️ Cannot DM {user}")
         return False
+
+def check_discord_rate_limit():
+    """Check if bot is currently Discord rate-limited. Auto-clears after timeout."""
+    global DISCORD_RATE_LIMITED, DISCORD_RATE_LIMITED_TIME
+    
+    if not DISCORD_RATE_LIMITED:
+        return False
+    
+    # Check if timeout has elapsed
+    if int(time.time()) - DISCORD_RATE_LIMITED_TIME > DISCORD_RATE_LIMITED_TIMEOUT:
+        print(f"✅ Discord rate-limit lock cleared after {DISCORD_RATE_LIMITED_TIMEOUT}s timeout")
+        DISCORD_RATE_LIMITED = False
+        DISCORD_RATE_LIMITED_TIME = 0
+        return False
+    
+    return True
+
+def set_discord_rate_limited(status: bool):
+    """Set global Discord rate-limit flag."""
+    global DISCORD_RATE_LIMITED, DISCORD_RATE_LIMITED_TIME
+    if status:
+        DISCORD_RATE_LIMITED = True
+        DISCORD_RATE_LIMITED_TIME = int(time.time())
+        print(f"🔴 DISCORD RATE LIMITED (429) - All message sends blocked for {DISCORD_RATE_LIMITED_TIMEOUT}s")
+    else:
+        DISCORD_RATE_LIMITED = False
+        DISCORD_RATE_LIMITED_TIME = 0
+
+async def safe_send_message_with_ratelimit(channel_or_interaction, **kwargs) -> Optional:
+    """Send message/response safely, respecting Discord rate-limit flag."""
+    global DISCORD_RATE_LIMITED
+    
+    if check_discord_rate_limit():
+        print(f"⏳ Blocked message send due to 429 rate limit (will auto-clear in {DISCORD_RATE_LIMITED_TIMEOUT}s)")
+        return None
+    
+    try:
+        # Determine if this is an interaction or channel
+        if hasattr(channel_or_interaction, 'response'):  # discord.Interaction
+            if 'ephemeral' not in kwargs:
+                kwargs['ephemeral'] = True
+            await channel_or_interaction.response.send_message(**kwargs)
+        else:  # discord.TextChannel
+            await channel_or_interaction.send(**kwargs)
+        return True
+    except discord.HTTPException as e:
+        if e.status == 429:
+            set_discord_rate_limited(True)
+            print(f"❌ HTTP 429 detected - rate-limit lock engaged")
+        raise
+    except Exception as e:
+        print(f"⚠️ Error sending message: {type(e).__name__}: {e}")
+        return None
 
 async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: str, placeholder_message_id: Optional[int] = None) -> tuple[bool, str]:
     """
@@ -944,7 +1034,7 @@ async def queue_ai_request(user_id: int, channel_id: int, prompt: str, context: 
             "channel_id": channel_id,
             "prompt": prompt,
             "context": context,
-            "created_at": time.time(),
+            "created_at": int(time.time()),
             "retry_count": 0,
             "placeholder_message_id": placeholder_message_id,
         }
@@ -1022,7 +1112,7 @@ async def log_error(msg):
         return
     
     # Rate limit error logs to prevent Discord spam
-    now = time.time()
+    now = int(time.time())
     if "last_error_log" in ERROR_LOG_COOLDOWN and (now - ERROR_LOG_COOLDOWN["last_error_log"]) < ERROR_LOG_COOLDOWN_DURATION:
         print(f"⏳ Error log rate-limited: {msg[:100]}...")
         return
@@ -1412,7 +1502,7 @@ def get_compliment_cooldown_remaining(user_id: str) -> int:
 
 def set_compliment_cooldown(user_id: str):
     """Set compliment cooldown for user to now."""
-    COMPLIMENT_COOLDOWNS[str(user_id)] = time.time()
+    COMPLIMENT_COOLDOWNS[str(user_id)] = int(time.time())
 
 async def add_to_wishlist(user_id: str, item_id: int) -> tuple:
     """Add item to user's wishlist. Returns (success: bool, message: str)"""
@@ -3198,8 +3288,7 @@ async def task(interaction: discord.Interaction):
         "task": chosen_task["name"],
         "desc": chosen_task["desc"],
         "reward": reward_points,
-        "timestamp": time.time(),
-        "completed": False,
+        "timestamp": int(time.time()),
         "message_id": None,
         "channel_id": None
     }
@@ -3245,7 +3334,7 @@ async def questforce(interaction: discord.Interaction):
     quest = random.choice(quests)
     quest_id = f"{int(time.time())}_{quest_user.id}"
     bot.db.setdefault("completed_quests", {})[quest_id] = False
-    bot.db["last_quest_time"] = time.time()  # Maintain 12h cadence from latest dispatch
+    bot.db["last_quest_time"] = int(time.time())  # Maintain 12h cadence from latest dispatch
     save_data(bot.db)
     await safe_send_dm(quest_user, embed=create_embed("🔮 DAILY QUEST (FORCED)", quest, color=0xff00ff))
     await interaction.followup.send(f"✅ Quest forced to {quest_user.mention}", ephemeral=True)
@@ -3614,6 +3703,13 @@ async def on_ready():
     
     print(f"✅ Bot ready: {bot.user.name} ({bot.user.id})")
     print(f"📊 Serving {len(bot.guilds)} guild(s)")
+    
+    # Start HTTP health check server (first, to unblock Koyeb health checks)
+    if HTTP_SERVER is None:
+        try:
+            await start_http_server()
+        except Exception as e:
+            print(f"⚠️ Failed to start HTTP server: {e}")
 
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
@@ -3799,7 +3895,7 @@ async def on_message(message):
     uid = str(message.author.id)
     
     # Track activity
-    bot.db.setdefault("last_message_time", {})[uid] = time.time()
+    bot.db.setdefault("last_message_time", {})[uid] = int(time.time())
 
     try:
         # --- Task Completion via Reply ---
@@ -4211,6 +4307,9 @@ async def on_message(message):
     except Exception as e:
         error_msg = f"on_message error: {type(e).__name__}: {str(e)}"
         print(f"❌ {error_msg}")
+        # Check for Discord rate limit (HTTP 429)
+        if isinstance(e, discord.HTTPException) and e.status == 429:
+            set_discord_rate_limited(True)
         traceback.print_exc()
         await log_error(error_msg)
 
