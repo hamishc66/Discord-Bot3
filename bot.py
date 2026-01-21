@@ -1089,7 +1089,7 @@ async def create_review_ticket(user_id: str, session_id: str, answers: list, sco
             "answers": answers,
             "score": score,
             "status": "OPEN",
-            "created_at": datetime.now().isoformat()
+            "created_at": int(time.time())  # BIGINT timestamp fix
         }
         response = supabase.table("review_tickets").insert(ticket_data).execute()
         ensure_ok(response, "review_tickets insert")
@@ -1171,8 +1171,8 @@ async def log_interview_answer(user_id: int, user_mention: str, question_num: in
     except Exception as e:
         await log_error(f"interview answer log: {str(e)}")
 
-async def log_interview_complete(user_id: int, user_mention: str, score_total: int, total_questions: int, passed: bool, answers_list: list, questions_list: list):
-    """Log complete interview summary to INTERVIEW_LOGS_CHANNEL."""
+async def log_interview_complete(user_id: int, user_mention: str, score_total: int, total_questions: int, passed: bool, answers_list: list, questions_list: list, forced: bool = False, triggered_by: str = None):
+    """Log complete interview summary to INTERVIEW_LOGS_CHANNEL. Supports forced interviews."""
     if not INTERVIEW_LOGS_CHANNEL_ID:
         return
     
@@ -1196,7 +1196,7 @@ async def log_interview_complete(user_id: int, user_mention: str, score_total: i
         
         # Create final summary embed
         summary_embed = discord.Embed(
-            title="🏁 INTERVIEW COMPLETE",
+            title="🏁 INTERVIEW COMPLETE" if not forced else "🏁 FORCED INTERVIEW COMPLETE",
             color=0x00ff00 if passed else 0xff0000,
             timestamp=datetime.now()
         )
@@ -1204,6 +1204,9 @@ async def log_interview_complete(user_id: int, user_mention: str, score_total: i
         summary_embed.add_field(name="User", value=user_mention, inline=True)
         summary_embed.add_field(name="Final Score", value=f"`{score_total}/{total_questions}`", inline=True)
         summary_embed.add_field(name="Status", value="✅ PASSED" if passed else "❌ FAILED/UNDER REVIEW", inline=False)
+        if forced and triggered_by:
+            summary_embed.add_field(name="Interview Type", value="🔫 FORCED", inline=True)
+            summary_embed.add_field(name="Triggered By", value=f"`{triggered_by}`", inline=True)
         summary_embed.add_field(name="Q&A Summary", value=qa_summary[:1024], inline=False)
         summary_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW FINAL LOG")
         
@@ -2241,6 +2244,7 @@ async def help_cmd(interaction: discord.Interaction):
         "`/questforce` — Force-send a quest to a random member (admin)\n"
         "`/spam @user message` — (Owner only) Controlled ping system\n"
         "`/stop` — Stop active spam\n"
+        "`/interview @user` — (Owner or Admin) Force an interview on a user\n"
     )
     embed = create_embed(
         "Commands",
@@ -2542,6 +2546,139 @@ async def stop(interaction: discord.Interaction):
         ),
         ephemeral=True
     )
+
+@bot.tree.command(name="interview", description="Force an interview on a selected user")
+async def force_interview(interaction: discord.Interaction, user: discord.User):
+    """Force an interview on a user. Owner or admin only."""
+    OWNER_ID = 765028951541940225
+    
+    # === PERMISSION CHECK ===
+    is_owner = interaction.user.id == OWNER_ID
+    is_admin = interaction.user.guild_permissions.administrator if hasattr(interaction.user, 'guild_permissions') else False
+    
+    if not (is_owner or is_admin):
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Owner or Administrator only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # === VALIDATION ===
+    # Target is not a bot
+    if user.bot:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Cannot Interview Bot", "Target must be a user, not a bot.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Target is not the command invoker
+    if user.id == interaction.user.id:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Cannot Interview Self", "You cannot force an interview on yourself.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Target is not already in an active interview
+    uid = str(user.id)
+    if uid in bot.db.get("interviews", {}):
+        await interaction.response.send_message(
+            embed=create_embed("⚠️ Already Interviewing", f"{user.mention} is already in an active interview.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+    
+    # === INITIALIZE FORCED INTERVIEW ===
+    try:
+        session_id = f"interview_{uid}_{int(time.time())}"
+        state = {
+            "index": 0,
+            "score": 0,
+            "questions": INTERVIEW_QUESTIONS,
+            "answers": [],
+            "forced": True,
+            "triggered_by": str(interaction.user.id),
+            "session_id": session_id
+        }
+        bot.db.setdefault("interviews", {})[uid] = state
+        save_data(bot.db)
+        
+        # === ATTEMPT TO DM TARGET WITH FIRST QUESTION ===
+        goals = (
+            "Interview goals:\n"
+            "• Answer directly and respectfully (1-3 sentences).\n"
+            "• Stay on-topic; mention NSC when asked.\n"
+            "• No jokes, hostility, or evasions.\n"
+            "• Honesty over flattery; be concise."
+        )
+        first_question = INTERVIEW_QUESTIONS[0]
+        interview_embed = create_embed(
+            "👁️ SCREENING (FORCED)",
+            f"{goals}\n\nQ1/10: {first_question}"
+        )
+        
+        # Try to send DM
+        try:
+            await user.send(embed=interview_embed)
+            dm_sent = True
+        except Exception as e:
+            dm_sent = False
+            await log_error(f"force_interview dm failed [user={uid}, session={session_id}]: {str(e)}")
+        
+        # === SEND FEEDBACK TO INVOKER ===
+        if dm_sent:
+            await interaction.response.send_message(
+                embed=create_embed(
+                    "✅ Interview Started",
+                    f"Forced interview initiated for {user.mention}.\nSession: `{session_id}`\nThey should receive the first question via DM.",
+                    color=EMBED_COLORS["success"]
+                ),
+                ephemeral=True
+            )
+        else:
+            # DM failed - provide guidance
+            await interaction.response.send_message(
+                embed=create_embed(
+                    "⚠️ Could Not DM User",
+                    f"Failed to send first question to {user.mention}.\n\n**Why?**\nThey may have DMs disabled.\n\n**Fix:**\nAsk them to enable DMs and try again.",
+                    color=EMBED_COLORS["warning"]
+                ),
+                ephemeral=True
+            )
+            # Remove interview state since DM failed
+            bot.db["interviews"].pop(uid, None)
+            save_data(bot.db)
+        
+        # === LOG FORCED INTERVIEW INITIATION ===
+        if INTERVIEW_LOGS_CHANNEL_ID:
+            try:
+                ch = bot.get_channel(INTERVIEW_LOGS_CHANNEL_ID)
+                if ch:
+                    log_embed = discord.Embed(
+                        title="🔫 FORCED INTERVIEW INITIATED",
+                        color=0xffaa00,
+                        timestamp=datetime.now()
+                    )
+                    log_embed.add_field(name="Target User", value=f"{user.mention} (`{uid}`)", inline=True)
+                    log_embed.add_field(name="Triggered By", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+                    log_embed.add_field(name="Session ID", value=f"`{session_id}`", inline=False)
+                    log_embed.add_field(name="DM Status", value="✅ Sent" if dm_sent else "❌ Failed", inline=True)
+                    log_embed.set_footer(text="NIMBROR WATCHER v6.5 • FORCED INTERVIEW LOG")
+                    await ch.send(embed=log_embed)
+            except Exception as e:
+                await log_error(f"force_interview log [user={uid}, session={session_id}]: {str(e)}")
+    
+    except Exception as e:
+        await log_error(f"force_interview [user={uid}]: {str(e)}")
+        await interaction.response.send_message(
+            embed=create_embed(
+                "❌ Interview Error",
+                f"Failed to start interview: {str(e)[:100]}",
+                color=EMBED_COLORS["error"]
+            ),
+            ephemeral=True
+        )
 
 @bot.tree.command(name="notes", description="View staff notes for a user")
 @app_commands.checks.has_permissions(manage_messages=True)
@@ -4098,8 +4235,12 @@ async def on_message(message):
                 save_data(bot.db)
 
                 outcome_embed = None
-                # Threshold logic: <=4 fail, 5-6 requires human, >=7 pass, 10 perfect
+                logging_failed = False
+                session_id = f"interview_{uid}_{int(time.time())}"
+                
+                # Threshold logic: <=4 fail, 5-9 requires human, >=7 pass, 10 perfect
                 if score_total <= 4:
+                    # === DISCORD LOGGING FIRST (GUARANTEED) ===
                     update_social_credit(uid, -5)
                     outcome_embed = create_embed(
                         "❌ ACCESS DENIED",
@@ -4109,9 +4250,9 @@ async def on_message(message):
                     try:
                         await message.author.send(embed=outcome_embed, view=InterviewFailView(message.author.id))
                     except Exception as e:
-                        await log_error(f"interview fail dm: {str(e)}")
+                        await log_error(f"interview fail dm [user={uid}, session={session_id}]: {str(e)}")
                     
-                    # Log final interview summary
+                    # Log final interview summary to Discord
                     await log_interview_complete(
                         user_id=int(uid),
                         user_mention=message.author.mention,
@@ -4119,10 +4260,12 @@ async def on_message(message):
                         total_questions=total_questions,
                         passed=False,
                         answers_list=state.get("answers", []),
-                        questions_list=questions
+                        questions_list=questions,
+                        forced=state.get("forced", False),
+                        triggered_by=state.get("triggered_by")
                     )
                     
-                    # Send AI analysis to logs
+                    # Send AI analysis to Discord logs
                     await send_interview_ai_summary(
                         user_id=int(uid),
                         user_mention=message.author.mention,
@@ -4133,41 +4276,48 @@ async def on_message(message):
                         passed=False
                     )
                     
-                    # Log interview failure to INTERVIEW_CHANNEL
-                    if INTERVIEW_CHANNEL_ID:
+                    # === SUPABASE WRITES (OPTIONAL - NO ERROR CRASH) ===
+                    try:
+                        # Log interview failure to INTERVIEW_CHANNEL
+                        if INTERVIEW_CHANNEL_ID:
+                            try:
+                                ch = bot.get_channel(INTERVIEW_CHANNEL_ID)
+                                if ch:
+                                    fail_embed = discord.Embed(
+                                        title="🔴 INTERVIEW FAILED",
+                                        color=0xff0000,
+                                        timestamp=datetime.now()
+                                    )
+                                    fail_embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+                                    fail_embed.add_field(name="Score", value=f"`{score_total}/10`", inline=True)
+                                    fail_embed.add_field(name="User", value=f"{message.author.mention}", inline=False)
+                                    fail_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW FAILED")
+                                    await ch.send(f"<@765028951541940225>", embed=fail_embed)
+                            except Exception as e:
+                                logging_failed = True
+                                await log_error(f"interview fail channel log [user={uid}, session={session_id}]: {str(e)}")
+                    except Exception as e:
+                        logging_failed = True
+                        await log_error(f"interview fail supabase [user={uid}, session={session_id}]: {str(e)}")
+                    
+                    # Notify user if logging partially failed
+                    if logging_failed:
                         try:
-                            ch = bot.get_channel(INTERVIEW_CHANNEL_ID)
-                            if ch:
-                                fail_embed = discord.Embed(
-                                    title="🔴 INTERVIEW FAILED",
-                                    color=0xff0000,
-                                    timestamp=datetime.now()
-                                )
-                                fail_embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
-                                fail_embed.add_field(name="Score", value=f"`{score_total}/10`", inline=True)
-                                fail_embed.add_field(name="User", value=f"{message.author.mention}", inline=False)
-                                fail_embed.set_footer(text="NIMBROR WATCHER v6.5 • INTERVIEW FAILED")
-                                await ch.send(f"<@765028951541940225>", embed=fail_embed)
-                        except Exception as e:
-                            await log_error(f"interview fail channel log: {str(e)}")
+                            await message.author.send(embed=create_embed(
+                                "⚠️ Logging Alert",
+                                "Interview recorded but some logs may be incomplete.",
+                                color=EMBED_COLORS["warning"]
+                            ))
+                        except:
+                            pass
                     return
 
                 if score_total <= 6:
+                    # === SCORE 5-9: HUMAN OVERSIGHT REQUIRED ===
                     update_social_credit(uid, 0)
-                    
-                    # Generate session ID
-                    session_id = f"interview_{uid}_{int(time.time())}"
-                    
-                    # Store answers for review
                     answers = state.get("answers", [])
                     
-                    # Create review ticket in Supabase
-                    ticket_created = await create_review_ticket(uid, session_id, answers, score_total)
-                    
-                    # Update interview session status to UNDER_REVIEW
-                    await update_interview_session_status(uid, session_id, "UNDER_REVIEW")
-                    
-                    # Log final interview summary
+                    # === DISCORD LOGGING FIRST (GUARANTEED) ===
                     await log_interview_complete(
                         user_id=int(uid),
                         user_mention=message.author.mention,
@@ -4175,10 +4325,12 @@ async def on_message(message):
                         total_questions=total_questions,
                         passed=False,
                         answers_list=answers,
-                        questions_list=questions
+                        questions_list=questions,
+                        forced=state.get("forced", False),
+                        triggered_by=state.get("triggered_by")
                     )
                     
-                    # Send AI analysis to logs
+                    # Send AI analysis to Discord logs
                     await send_interview_ai_summary(
                         user_id=int(uid),
                         user_mention=message.author.mention,
@@ -4189,9 +4341,39 @@ async def on_message(message):
                         passed=False
                     )
                     
-                    # Post to INTERVIEW_CHANNEL for staff oversight
-                    if INTERVIEW_CHANNEL_ID and ticket_created:
-                        try:
+                    # === SUPABASE WRITES (OPTIONAL - NO ERROR CRASH) ===
+                    try:
+                        # Create review ticket in Supabase with BIGINT timestamp
+                        ticket_data = {
+                            "user_id": uid,
+                            "session_id": session_id,
+                            "answers": answers,
+                            "score": score_total,
+                            "status": "OPEN",
+                            "created_at": int(time.time())  # BIGINT timestamp fix
+                        }
+                        response = supabase.table("review_tickets").insert(ticket_data).execute()
+                        ensure_ok(response, "review_tickets insert")
+                        ticket_created = True
+                    except Exception as e:
+                        logging_failed = True
+                        ticket_created = False
+                        await log_error(f"create_review_ticket [user={uid}, session={session_id}]: {str(e)}")
+                    
+                    try:
+                        # Update interview session status to UNDER_REVIEW with BIGINT timestamp
+                        response = supabase.table("interview_sessions").update({
+                            "status": "UNDER_REVIEW",
+                            "updated_at": int(time.time())  # BIGINT timestamp fix
+                        }).eq("user_id", uid).eq("id", session_id).execute()
+                        ensure_ok(response, "interview_sessions update")
+                    except Exception as e:
+                        logging_failed = True
+                        await log_error(f"update_interview_session_status [user={uid}, session={session_id}]: {str(e)}")
+                    
+                    try:
+                        # Post to INTERVIEW_CHANNEL for staff oversight with human oversight button
+                        if INTERVIEW_CHANNEL_ID and ticket_created:
                             ch = bot.get_channel(INTERVIEW_CHANNEL_ID)
                             if ch:
                                 # Build answers summary
@@ -4200,30 +4382,46 @@ async def on_message(message):
                                     qa_summary += f"**Q{i}:** {ans[:80]}\n"
                                 
                                 review_embed = discord.Embed(
-                                    title="⚠️ INTERVIEW REQUIRES REVIEW",
+                                    title="⚠️ INTERVIEW REQUIRES HUMAN REVIEW",
                                     color=0xff9900,
                                     timestamp=datetime.now()
                                 )
                                 review_embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
                                 review_embed.add_field(name="Session ID", value=f"`{session_id}`", inline=True)
                                 review_embed.add_field(name="Score", value=f"`{score_total}/10`", inline=False)
-                                review_embed.add_field(name="Answers", value=qa_summary[:1024], inline=False)
+                                review_embed.add_field(name="Answers Preview", value=qa_summary[:1024], inline=False)
                                 review_embed.set_footer(text="NIMBROR WATCHER v6.5 • HUMAN OVERSIGHT REQUIRED")
                                 
                                 # Send review embed with untrusted mode button
-                                msg = await ch.send(f"<@765028951541940225>", embed=review_embed, view=UntrustedUserView(message.author.id))
-                        except Exception as e:
-                            await log_error(f"interview review channel log: {str(e)}")
+                                await ch.send(f"<@765028951541940225>", embed=review_embed, view=UntrustedUserView(message.author.id))
+                    except Exception as e:
+                        logging_failed = True
+                        await log_error(f"interview review channel log [user={uid}, session={session_id}]: {str(e)}")
                     
+                    # Outcome message to user
                     outcome_embed = create_embed(
                         "⚠️ HUMAN REVIEW REQUIRED",
-                        f"Score: {score_total}/10. Awaiting staff intervention.",
+                        f"Score: {score_total}/10. Your application is under staff review. Please wait for their decision.",
                         color=EMBED_COLORS["warning"]
                     )
-                    await message.author.send(embed=outcome_embed)
+                    try:
+                        await message.author.send(embed=outcome_embed)
+                    except Exception as e:
+                        await log_error(f"interview review dm [user={uid}, session={session_id}]: {str(e)}")
+                    
+                    # Notify user if logging partially failed
+                    if logging_failed:
+                        try:
+                            await message.author.send(embed=create_embed(
+                                "⚠️ Logging Alert",
+                                "Interview recorded but some logs may be incomplete.",
+                                color=EMBED_COLORS["warning"]
+                            ))
+                        except:
+                            pass
                     return
 
-                # Passed
+                # === PASSED (SCORE >= 7) ===
                 credit_bonus = 10 if score_total == total_questions else 5
                 update_social_credit(uid, credit_bonus)
 
@@ -4236,9 +4434,9 @@ async def on_message(message):
                         if member and role:
                             await member.add_roles(role)
                     except Exception as e:
-                        await log_error(f"interview role add: {str(e)}")
+                        await log_error(f"interview role add [user={uid}, session={session_id}]: {str(e)}")
 
-                # Log final interview summary
+                # === DISCORD LOGGING FIRST (GUARANTEED) ===
                 await log_interview_complete(
                     user_id=int(uid),
                     user_mention=message.author.mention,
@@ -4246,10 +4444,12 @@ async def on_message(message):
                     total_questions=total_questions,
                     passed=True,
                     answers_list=state.get("answers", []),
-                    questions_list=questions
+                    questions_list=questions,
+                    forced=state.get("forced", False),
+                    triggered_by=state.get("triggered_by")
                 )
                 
-                # Send AI analysis to logs
+                # Send AI analysis to Discord logs
                 await send_interview_ai_summary(
                     user_id=int(uid),
                     user_mention=message.author.mention,
@@ -4260,13 +4460,39 @@ async def on_message(message):
                     passed=True
                 )
 
+                # === SUPABASE WRITES (OPTIONAL - NO ERROR CRASH) ===
+                try:
+                    # Update interview session status to APPROVED with BIGINT timestamp
+                    response = supabase.table("interview_sessions").update({
+                        "status": "APPROVED",
+                        "updated_at": int(time.time())  # BIGINT timestamp fix
+                    }).eq("user_id", uid).eq("id", session_id).execute()
+                    ensure_ok(response, "interview_sessions update")
+                except Exception as e:
+                    logging_failed = True
+                    await log_error(f"update_interview_session_status [user={uid}, session={session_id}, step=approve]: {str(e)}")
+                
                 outcome_text = "Perfect pass. Welcome to Nimbror." if score_total == total_questions else "Pass. Proceed quietly."
                 outcome_embed = create_embed(
                     "✅ ACCESS GRANTED",
                     f"Score: {score_total}/10. {outcome_text}",
                     color=EMBED_COLORS["success"]
                 )
-                await message.author.send(embed=outcome_embed)
+                try:
+                    await message.author.send(embed=outcome_embed)
+                except Exception as e:
+                    await log_error(f"interview pass dm [user={uid}, session={session_id}]: {str(e)}")
+                
+                # Notify user if logging partially failed
+                if logging_failed:
+                    try:
+                        await message.author.send(embed=create_embed(
+                            "⚠️ Logging Alert",
+                            "Interview recorded but some logs may be incomplete.",
+                            color=EMBED_COLORS["warning"]
+                        ))
+                    except:
+                        pass
                 return
 
             # Continue to next question (only if we just scored one)
