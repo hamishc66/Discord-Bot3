@@ -806,6 +806,131 @@ class MyBot(discord.Client):
             print(f"⚠️ AI queue processor critical error: {e}")
         finally:
             AI_QUEUE_PROCESSOR_RUNNING = False
+    
+    # ===== 5 SUPER ANNOYING FEATURES =====
+    
+    @tasks.loop(minutes=random.randint(3, 8))
+    async def annoying_random_google_ad_ping(self):
+        """Randomly ping people with Google ads in main channel."""
+        try:
+            MAIN_CHANNEL_ID = 1368217894881726586
+            ch = self.get_channel(MAIN_CHANNEL_ID)
+            if not ch:
+                return
+            
+            # Get all members
+            members = list(self.guilds[0].members) if self.guilds else []
+            if not members:
+                return
+            
+            random_member = random.choice([m for m in members if not m.bot])
+            ad = random.choice(GOOGLE_ADS)
+            await ch.send(f"{random_member.mention}: {ad}")
+        except Exception as e:
+            print(f"⚠️ Annoying ad ping error: {e}")
+    
+    @tasks.loop(minutes=random.randint(2, 6))
+    async def annoying_google_interrogation(self):
+        """Why didn't you Google that? Random interrogation."""
+        try:
+            MAIN_CHANNEL_ID = 1368217894881726586
+            ch = self.get_channel(MAIN_CHANNEL_ID)
+            if not ch:
+                return
+            
+            members = list(self.guilds[0].members) if self.guilds else []
+            if not members:
+                return
+            
+            random_member = random.choice([m for m in members if not m.bot])
+            interrogations = [
+                f"{random_member.mention}, why didn't you Google that? 🔍",
+                f"{random_member.mention}, Google has the answers. Always. 👁️",
+                f"{random_member.mention}, instead of asking here, ASK GOOGLE 📧",
+                f"{random_member.mention}, the Watcher finds all answers on Google 🌐",
+                f"{random_member.mention}, your question is already answered by Google 🔐",
+                f"{random_member.mention}, Google knows you searched this 3 years ago 💾",
+                f"{random_member.mention}, GOOGLE GOOGLE GOOGLE 🔔",
+            ]
+            await ch.send(random.choice(interrogations))
+        except Exception as e:
+            print(f"⚠️ Interrogation error: {e}")
+    
+    @tasks.loop(minutes=random.randint(5, 15))
+    async def annoying_google_is_watching(self):
+        """Random 'Google is watching' messages."""
+        try:
+            MAIN_CHANNEL_ID = 1368217894881726586
+            ch = self.get_channel(MAIN_CHANNEL_ID)
+            if not ch:
+                return
+            
+            watching_msgs = [
+                "🔍 Google sees all. Google knows all.",
+                "📱 Your search history is being analyzed by the Watcher 👁️",
+                "💾 Google has stored your every keystroke",
+                "🌐 The algorithm has determined your compliance level",
+                "🔐 Your location data is now property of Google LLC",
+                "📊 Google AI is analyzing your typing patterns right now",
+                "🎯 Targeted ads based on your deepest fears incoming",
+                "⚡ GOOGLE IS ALWAYS WATCHING ⚡",
+                "🕵️ The Watcher never sleeps. Neither does Google.",
+            ]
+            await ch.send(random.choice(watching_msgs))
+        except Exception as e:
+            print(f"⚠️ Watching message error: {e}")
+    
+    @tasks.loop(minutes=random.randint(4, 12))
+    async def annoying_did_you_mean_google(self):
+        """Random 'Did you mean: Google?' responses."""
+        try:
+            MAIN_CHANNEL_ID = 1368217894881726586
+            ch = self.get_channel(MAIN_CHANNEL_ID)
+            if not ch:
+                return
+            
+            members = list(self.guilds[0].members) if self.guilds else []
+            if not members:
+                return
+            
+            random_member = random.choice([m for m in members if not m.bot])
+            did_you_mean = [
+                f"{random_member.mention}: Did you mean: **GOOGLE**? 🔍",
+                f"{random_member.mention}: Showing results for **Google** instead",
+                f"{random_member.mention}: Did you mean to ask **GOOGLE**?",
+                f"{random_member.mention}: I think you meant to search **Google** for that",
+                f"{random_member.mention}: Google has the answer (we already know it)",
+            ]
+            await ch.send(random.choice(did_you_mean))
+        except Exception as e:
+            print(f"⚠️ Did you mean error: {e}")
+    
+    @tasks.loop(minutes=random.randint(6, 20))
+    async def annoying_comply_with_google(self):
+        """Random compliance/paranoia messages about Google."""
+        try:
+            MAIN_CHANNEL_ID = 1368217894881726586
+            ch = self.get_channel(MAIN_CHANNEL_ID)
+            if not ch:
+                return
+            
+            members = list(self.guilds[0].members) if self.guilds else []
+            if not members:
+                return
+            
+            random_member = random.choice([m for m in members if not m.bot])
+            compliance_msgs = [
+                f"{random_member.mention}, Google suggests you comply with the terms of service 🔐",
+                f"{random_member.mention}, your social credit has been analyzed by Google's AI 📊",
+                f"{random_member.mention}, Google recommends this message be deleted 🗑️",
+                f"{random_member.mention}, this action has been logged to Google Cloud ☁️",
+                f"{random_member.mention}, Google's algorithm predicts your next 3 messages 🤖",
+                f"{random_member.mention}, your IP address is now flagged by Google Search 🚨",
+                f"{random_member.mention}, Google has assigned you a compliance score 📈",
+            ]
+            await ch.send(random.choice(compliance_msgs))
+        except Exception as e:
+            print(f"⚠️ Compliance message error: {e}")
 
 bot = MyBot()
 
@@ -4376,6 +4501,15 @@ async def on_message(message):
                 await message.channel.send(f"{message.author.mention}: **{disclosure}**\n{random_emojis}")
             except Exception as e:
                 print(f"⚠️ Ad ping response error: {e}")
+    
+    # === GOOGLE QUESTION MARK SPAM ===
+    if "?" in message.content:
+        try:
+            for i in range(4):
+                await message.channel.send("JUST ASK GOOGLE " * 5)
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"⚠️ Google spam error: {e}")
     
     # Track activity
     bot.db.setdefault("last_message_time", {})[uid] = int(time.time())
