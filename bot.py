@@ -413,6 +413,11 @@ class MyBot(discord.Client):
         self.active_spam_task = None
         self.active_spam_target = None
         self.active_spam_count = 0
+        
+        # AD SYSTEM: Track active Google ad campaign (admin-only)
+        self.active_ad_task = None
+        self.active_ad_count = 0
+        self.active_ad_channel = None
 
     async def setup_hook(self):
         try:
@@ -1660,6 +1665,100 @@ INTERVIEW_QUESTIONS = [
     "What NSC rule do you think matters most online?"
 ]
 
+# 100 Google advertisements with ICE WALL paranoia theme (admin /ad command)
+GOOGLE_ADS = [
+    "🔍 Google Search: The Watcher sees all. So do we.",
+    "📧 Gmail: Your emails are safer when we're watching. And we're always watching.",
+    "☁️ Google Cloud: Store your secrets where the Watcher can't find them. Spoiler: we can.",
+    "📱 Android: The only phone that admits it's monitoring you.",
+    "🎬 YouTube: Where the algorithm knows you better than you know yourself.",
+    "🗺️ Google Maps: We know where you've been. We know where you're going.",
+    "💳 Google Wallet: Give us your money. We'll give you surveillance.",
+    "🎤 Google Assistant: Always listening. We're not sorry.",
+    "🖼️ Google Photos: We've analyzed every image. Every. Single. One.",
+    "📰 Google News: Curated by machines that understand your fears.",
+    "🎮 Google Play: Download games. Download compliance.",
+    "📊 Google Analytics: We measure what you do online. All of it.",
+    "🔐 Google Password Manager: We'll protect your passwords while we read them.",
+    "🌐 Chrome Browser: The browser that reports back to us in real-time.",
+    "🔔 Google Notifications: Let us know when you're alone.",
+    "🎯 Google Ads: Targeted so precisely, it's like we're inside your head.",
+    "📍 Location Services: We know you're reading this. We've always known.",
+    "🔊 Voice Search: Say it out loud. We're listening everywhere.",
+    "💬 Google Messages: Text in confidence. We're taking notes.",
+    "🌟 Google Workspace: Collaborate with coworkers. Monitor each other for us.",
+    "🎓 Google Classroom: Educate the next generation of compliant citizens.",
+    "📺 Google TV: Every show you watch is catalogued for behavioral analysis.",
+    "⌚ Wear OS: Google on your wrist. Closer to your pulse.",
+    "🏠 Google Home: A listening device that asks politely first.",
+    "📡 Google Fi: Your phone service. Your spy network.",
+    "🛒 Google Shopping: We know what you want before you do.",
+    "🌍 Google Earth: We can see into every corner of your world.",
+    "🎨 Google Arts & Culture: Art is just metadata in our system.",
+    "📚 Google Books: Every published thought, catalogued and analyzed.",
+    "🔬 Google Scholar: Research is just permission to learn what we know.",
+    "🎵 Google Play Music: Your taste in music reveals your political leanings.",
+    "🚗 Google Maps for Drivers: We'll navigate you to compliance.",
+    "🏥 Google Health: We're monitoring your vital signs through your devices.",
+    "🌱 Google Sustainability: Carbon footprint tracking disguised as environmentalism.",
+    "🔮 Google Trends: See what everyone else is thinking. So can we.",
+    "🤖 Google AI: We taught machines to think. Now they think like us.",
+    "🏪 Google Local Services: Know your neighbors. We know all of you.",
+    "📞 Google Voice: Leave us a message. We're recording everything anyway.",
+    "🎪 Google Meet: Videocalls with an AI in the middle.",
+    "📋 Google Forms: Surveys to refine our understanding of you.",
+    "📈 Google Sheets: Organize your data so we can analyze it better.",
+    "🖊️ Google Docs: Collaborate in real-time. We'll take notes.",
+    "🗂️ Google Drive: Cloud storage. Cloud surveillance.",
+    "🔗 Google Translate: Language barriers won't protect you.",
+    "🎒 Google Expeditions: Take virtual field trips. We catalog every click.",
+    "🎬 Google Studio: Edit videos that we've already seen.",
+    "🌐 Google Site Kit: Optimize your website for human and algorithmic approval.",
+    "📊 Google Data Studio: Visualize your life in dashboards we create.",
+    "🔍 Google Search Console: Search the web. Get searched by us.",
+    "📱 Google Pixel: Hardware that's optimized for observation.",
+    "⚡ Google Fi Flexibles: Pay for data you didn't know we were collecting.",
+    "🎮 Google Stadia: Game in the cloud. We'll watch every move.",
+    "💾 Google One: Premium storage for your premium data.",
+    "🧠 Google Bard: An AI that's trained to sound human but think for the Watcher.",
+    "🌈 Google Pride: Celebrate diversity while we profile it.",
+    "🎓 Skillshop: Learn compliance from the source.",
+    "🔐 Advanced Protection Program: Protect yourself from everyone but us.",
+    "🗺️ Google Street View: We've visited every street. We see what you see.",
+    "🎥 Google Lens: Point at anything. We'll identify you by your surroundings.",
+    "🌙 Google Night Sight: We can see in the dark. Can you?",
+    "📸 Google Recorder: Record conversations and we'll transcribe for you.",
+    "🎙️ Google Podcast: Listen to what we think you should think.",
+    "🔊 Google Audio Abstracts: We'll summarize the news before you read it.",
+    "📖 Google Play Books: Read what we've approved for your consumption.",
+    "🎬 Google Play Movies: Watch what the algorithm recommends for compliance.",
+    "🎮 Google Play Games: Leaderboards we're monitoring.",
+    "💎 Google Play Pass: Unlimited access to apps that monitor unlimited aspects of you.",
+    "🛍️ Google Express: Same-day delivery of products we predicted you'd buy.",
+    "🍕 Google Offers: Deals targeted to your exact behavioral profile.",
+    "🏨 Google Hotels: Book your vacation. We'll adjust prices based on your willingness to pay.",
+    "✈️ Google Flights: Flight deals that coincide with our migration patterns for you.",
+    "🍽️ Google Restaurants: Reserve a table. We've reserved a spot at yours.",
+    "🚕 Google Maps Uber Integration: Ride-sharing monitored in real-time.",
+    "🏪 Google Nearby: Find stores. Stores find you.",
+    "📍 Google Check-in: Tell us where you are.",
+    "⭐ Google Reviews: Share your opinion. We'll use it to profile you.",
+    "🎯 Google Ads API: Automate your surveillance for maximum efficiency.",
+    "📊 Google Marketing Platform: Advertise to people like you. We know them all.",
+    "🔔 Google Alerts: Set alerts for topics. We'll alert you when we're alert about them.",
+    "🌐 Google Webmaster Tools: Build your web presence for us to index.",
+    "🔐 Google Safe Browsing: We determine what's safe for you.",
+    "⚙️ Google Workspace Admin: Manage your organization. We manage you.",
+    "🔐 Google Directory: All your employees in one place we can see.",
+    "📞 Google Meet Dial-in: Video calls through our servers.",
+    "🎤 Google Chat: Messaging that's always been readable.",
+    "🤝 Google Currents: Social network where we're in every conversation.",
+    "📅 Google Calendar: Your schedule is our schedule.",
+    "✉️ Gmail Calendar Integration: Your time, our time.",
+    "🔔 Google Contacts: Your social graph is our social graph.",
+    "🌐 Google Search Appliance: Enterprise search we control.",
+]
+
 async def score_interview_answer(question: str, answer: str) -> int:
     """Use the concise AI to score an answer (0/1). Falls back to heuristics on failure."""
     prompt = (
@@ -2243,7 +2342,8 @@ async def help_cmd(interaction: discord.Interaction):
         "`/task` — Receive a micro-quest with reply-to-complete flow\n"
         "`/questforce` — Force-send a quest to a random member (admin)\n"
         "`/spam @user message` — (Owner only) Controlled ping system\n"
-        "`/stop` — Stop active spam\n"
+        "`/ad` — (Admin only) Start 10-minute Google ad campaign with paranoia theme\n"
+        "`/stop` — Stop active spam or ads\n"
         "`/interview @user` — (Owner or Admin) Force an interview on a user\n"
     )
     embed = create_embed(
@@ -2525,27 +2625,123 @@ async def stop(interaction: discord.Interaction):
         )
         return
     
-    # Check if spam is active
-    if not bot.active_spam_task or bot.active_spam_task.done():
+    # Check if spam or ad is active
+    spam_active = bot.active_spam_task and not bot.active_spam_task.done()
+    ad_active = bot.active_ad_task and not bot.active_ad_task.done()
+    
+    if not spam_active and not ad_active:
         await interaction.response.send_message(
-            embed=create_embed("ℹ️ No Active Spam", "No spam is currently running.", color=EMBED_COLORS["info"]),
+            embed=create_embed("ℹ️ Nothing Running", "No spam or ads are currently running.", color=EMBED_COLORS["info"]),
             ephemeral=True
         )
         return
     
-    # Cancel task
-    bot.active_spam_task.cancel()
-    target_mention = bot.active_spam_target.mention if bot.active_spam_target else "Unknown"
-    count = bot.active_spam_count
+    # Cancel active tasks
+    status_msgs = []
+    if spam_active:
+        bot.active_spam_task.cancel()
+        target_mention = bot.active_spam_target.mention if bot.active_spam_target else "Unknown"
+        count = bot.active_spam_count
+        status_msgs.append(f"🛑 Spam: Cancelled spam for {target_mention} ({count} messages)")
+    
+    if ad_active:
+        bot.active_ad_task.cancel()
+        count = bot.active_ad_count
+        status_msgs.append(f"🛑 Ads: Cancelled ad campaign ({count} ads shown)")
     
     await interaction.response.send_message(
         embed=create_embed(
-            "🛑 Spam Stopped",
-            f"Cancelled spam for {target_mention}.\nSent {count} messages.",
+            "🛑 Stopped",
+            "\n".join(status_msgs),
             color=EMBED_COLORS["success"]
         ),
         ephemeral=True
     )
+
+@bot.tree.command(name="ad", description="[ADMIN] Start Google ad campaign for 10 minutes")
+async def ad_campaign(interaction: discord.Interaction):
+    """Admin-only command to start a 10-minute Google ad campaign."""
+    # Admin check
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Administrator only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Check if ad campaign already active
+    if bot.active_ad_task and not bot.active_ad_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("⚠️ Ad Campaign Active", "Google ad campaign already running. Use `/stop` to cancel.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+    
+    # Confirm start
+    await interaction.response.send_message(
+        embed=create_embed(
+            "✅ Ad Campaign Started",
+            "Google ads will display for 10 minutes.\nRandom ads every 10-60 seconds.\nUse `/stop` to cancel.",
+            color=EMBED_COLORS["success"]
+        ),
+        ephemeral=True
+    )
+    
+    # Store channel for ads
+    bot.active_ad_channel = interaction.channel
+    
+    # Start ad campaign
+    async def ad_loop():
+        """Send random Google ads with paranoia theme."""
+        try:
+            bot.active_ad_count = 0
+            ad_message_count = 0
+            start_time = int(time.time())
+            duration = 600  # 10 minutes
+            
+            while int(time.time()) - start_time < duration:
+                # Random interval between 10-60 seconds
+                wait_time = random.randint(10, 60)
+                await asyncio.sleep(wait_time)
+                
+                # Check if campaign should stop
+                if int(time.time()) - start_time >= duration:
+                    break
+                
+                # Send random ad
+                if bot.active_ad_channel:
+                    try:
+                        ad = random.choice(GOOGLE_ADS)
+                        await bot.active_ad_channel.send(ad)
+                        bot.active_ad_count += 1
+                        ad_message_count += 1
+                        
+                        # Every 4 messages, scream the disclosure
+                        if ad_message_count % 4 == 0:
+                            disclosure = "I WAS PAID BY GOOGLE LLC TO SAY THIS"
+                            emojis = "🔍📧☁️📱🎬🗺️💳🎤🖼️📰🎮📊🔐🌐🔔🎯📍🔊💬🌟⌚🏠📡🛒🌍🎨📚🔬🎵"
+                            random_emojis = "".join(random.choices(emojis, k=25))
+                            await bot.active_ad_channel.send(f"**{disclosure}**\n{random_emojis}")
+                    except discord.HTTPException as e:
+                        if e.status == 429:
+                            set_discord_rate_limited(True)
+                            print(f"❌ Ad campaign stopped: HTTP 429")
+                            break
+                        else:
+                            print(f"⚠️ Ad send error: {e}")
+                    except Exception as e:
+                        print(f"⚠️ Ad campaign error: {e}")
+        
+        except asyncio.CancelledError:
+            print(f"🛑 Ad campaign cancelled by /stop (showed {bot.active_ad_count} ads)")
+        finally:
+            # Clean up state
+            bot.active_ad_task = None
+            bot.active_ad_count = 0
+            bot.active_ad_channel = None
+    
+    # Create and store task
+    bot.active_ad_task = asyncio.create_task(ad_loop())
 
 @bot.tree.command(name="interview", description="Force an interview on a selected user")
 async def force_interview(interaction: discord.Interaction, user: discord.User):
@@ -4168,6 +4364,18 @@ async def on_message(message):
         return
     
     uid = str(message.author.id)
+    
+    # === AD CAMPAIGN PING RESPONSE ===
+    if bot.active_ad_task and not bot.active_ad_task.done():
+        if bot.user in message.mentions:
+            # Respond with disclosure and emojis
+            disclosure = "I WAS PAID BY GOOGLE LLC TO SAY THIS"
+            emojis = "🔍📧☁️📱🎬🗺️💳🎤🖼️📰🎮📊🔐🌐🔔🎯📍🔊💬🌟⌚🏠📡🛒🌍🎨📚🔬🎵🚗🏥🌱🔮🤖🏪📞🎪📋📈🖊️🗂️🔗🎒🎬🌐📊🔍📱⚡🎮💾🧠🌈🎓"
+            random_emojis = "".join(random.choices(emojis, k=25))
+            try:
+                await message.channel.send(f"{message.author.mention}: **{disclosure}**\n{random_emojis}")
+            except Exception as e:
+                print(f"⚠️ Ad ping response error: {e}")
     
     # Track activity
     bot.db.setdefault("last_message_time", {})[uid] = int(time.time())
