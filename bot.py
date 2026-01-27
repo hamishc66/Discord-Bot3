@@ -61,6 +61,30 @@ REVIEW_CHANNEL_ID = to_int(REVIEW_CHANNEL_ID)
 INTERVIEW_CHANNEL_ID = to_int(INTERVIEW_CHANNEL_ID)
 INTERVIEW_LOGS_CHANNEL_ID = to_int(INTERVIEW_LOGS_CHANNEL_ID)
 
+# === NIMBROR ALERT SYSTEM (NAS) ===
+ANNOUNCEMENT_CHANNEL_ID = os.getenv("ANNOUNCEMENT_CHANNEL_ID")
+ANNOUNCEMENT_CHANNEL_ID = to_int(ANNOUNCEMENT_CHANNEL_ID)
+
+if not ANNOUNCEMENT_CHANNEL_ID:
+    print("⚠️ ANNOUNCEMENT_CHANNEL_ID not set (NAS announcements disabled)")
+if not STAFF_CHANNEL_ID:
+    print("⚠️ STAFF_CHANNEL_ID not set (NAS control panel disabled)")
+
+# NAS Level definitions
+NAS_LEVELS = {
+    1: {"name": "TOTAL CONTAINMENT", "color": 0x8B0000},
+    2: {"name": "HIGH RESTRICTION", "color": 0x800080},
+    3: {"name": "MEDIA LOCK", "color": 0xFF8C00},
+    4: {"name": "MINOR RESTRICTION", "color": 0xFFD700},
+    5: {"name": "NORMAL OPERATION", "color": 0x00B050}
+}
+
+# NAS Exception channel (always allows messaging in NAS-3)
+NAS_EXCEPTION_CHANNEL = 1368217894881726586
+
+# Permission storage for restoration
+ORIGINAL_PERMISSIONS = {}  # {channel_id: {role_id: permissions_dict}}
+
 # AI Cooldown tracking - REPLACED WITH ADAPTIVE COOLDOWN SYSTEM (see below)
 AI_COOLDOWN = {}  # Legacy - kept for backward compatibility
 COOLDOWN_DURATION = 15  # Base cooldown
@@ -1511,6 +1535,187 @@ def check_data_health():
     except Exception as e:
         return {"status": f"❌ Error: {str(e)[:20]}", "size_kb": 0, "records": 0, "readable": False}
 
+# --- NIMBROR ALERT SYSTEM (NAS) FUNCTIONS ---
+
+async def get_current_alert_level() -> int:
+    """Retrieve current NAS alert level from Supabase (default: 5=Normal)."""
+    try:
+        response = supabase.table("bot_state").select("alert_level").eq("id", 1).execute()
+        if response.data and len(response.data) > 0:
+            level = response.data[0].get("alert_level", 5)
+            return int(level)
+        return 5
+    except Exception as e:
+        await log_error(f"get alert level: {str(e)}")
+        return 5
+
+async def set_alert_level(level: int) -> bool:
+    """Set NAS alert level and save to Supabase."""
+    try:
+        if level < 1 or level > 5:
+            return False
+        response = supabase.table("bot_state").update({"alert_level": level}).eq("id", 1).execute()
+        ensure_ok(response, "bot_state alert level update")
+        return True
+    except Exception as e:
+        await log_error(f"set alert level: {str(e)}")
+        return False
+
+async def store_original_permissions(guild: discord.Guild) -> bool:
+    """Backup all channel permissions before modification (for restoration)."""
+    try:
+        if not guild:
+            return False
+        
+        ORIGINAL_PERMISSIONS.clear()
+        
+        for channel in guild.channels:
+            # Skip system channels and bot channels
+            if channel.id == NAS_EXCEPTION_CHANNEL or channel.name.startswith("🤖"):
+                continue
+            
+            ORIGINAL_PERMISSIONS[channel.id] = {}
+            
+            # Store all role permission overwrites
+            for target, overwrite in channel.overwrites.items():
+                if isinstance(target, discord.Role):
+                    ORIGINAL_PERMISSIONS[channel.id][target.id] = {
+                        "send_messages": overwrite.send_messages,
+                        "embed_links": overwrite.embed_links,
+                        "attach_files": overwrite.attach_files,
+                        "view_channel": overwrite.view_channel,
+                        "read_message_history": overwrite.read_message_history
+                    }
+        
+        return True
+    except Exception as e:
+        await log_error(f"store original permissions: {str(e)}")
+        return False
+
+async def apply_nas_restrictions(guild: discord.Guild, level: int) -> int:
+    """Apply NAS restrictions to guild. Returns number of channels modified."""
+    try:
+        if not guild or level < 1 or level > 5:
+            return 0
+        
+        modified = 0
+        
+        # NAS-5: Normal operation (no restrictions)
+        if level == 5:
+            return 0
+        
+        # Get member role (everyone)
+        member_role = guild.default_role
+        if not member_role:
+            return 0
+        
+        for channel in guild.channels:
+            # Skip system, bot, and exception channels
+            if channel.id == NAS_EXCEPTION_CHANNEL or channel.name.startswith("🤖"):
+                continue
+            
+            try:
+                # Allow delays between modifications to avoid rate limiting
+                await asyncio.sleep(0.3)
+                
+                # NAS-1: Total Containment (no messaging, no files, no embeds, no history)
+                if level == 1:
+                    await channel.set_permissions(
+                        member_role,
+                        send_messages=False,
+                        embed_links=False,
+                        attach_files=False,
+                        read_message_history=False
+                    )
+                    modified += 1
+                
+                # NAS-2: High Restriction (no files, no embeds, read-only)
+                elif level == 2:
+                    await channel.set_permissions(
+                        member_role,
+                        send_messages=False,
+                        embed_links=False,
+                        attach_files=False,
+                        read_message_history=True
+                    )
+                    modified += 1
+                
+                # NAS-3: Media Lock (no files, no embeds, except NAS_EXCEPTION_CHANNEL)
+                elif level == 3:
+                    await channel.set_permissions(
+                        member_role,
+                        send_messages=True,
+                        embed_links=False,
+                        attach_files=False,
+                        read_message_history=True
+                    )
+                    modified += 1
+                
+                # NAS-4: Minor Restriction (no files attached, embeds ok)
+                elif level == 4:
+                    await channel.set_permissions(
+                        member_role,
+                        send_messages=True,
+                        embed_links=True,
+                        attach_files=False,
+                        read_message_history=True
+                    )
+                    modified += 1
+            
+            except discord.Forbidden:
+                await log_error(f"NAS: No permission to modify #{channel.name}")
+                continue
+            except Exception as e:
+                await log_error(f"NAS modify channel {channel.id}: {str(e)}")
+                continue
+        
+        return modified
+    except Exception as e:
+        await log_error(f"apply NAS restrictions: {str(e)}")
+        return 0
+
+async def restore_permissions(guild: discord.Guild) -> int:
+    """Restore original permissions (set level to 5 = Normal)."""
+    try:
+        if not guild:
+            return 0
+        
+        restored = 0
+        
+        for channel in guild.channels:
+            if channel.id not in ORIGINAL_PERMISSIONS:
+                continue
+            
+            try:
+                await asyncio.sleep(0.3)
+                
+                # Get member role
+                member_role = guild.default_role
+                if not member_role:
+                    continue
+                
+                # Restore original permissions
+                perms_dict = ORIGINAL_PERMISSIONS[channel.id]
+                if member_role.id in perms_dict:
+                    orig = perms_dict[member_role.id]
+                    await channel.set_permissions(
+                        member_role,
+                        send_messages=orig.get("send_messages"),
+                        embed_links=orig.get("embed_links"),
+                        attach_files=orig.get("attach_files"),
+                        view_channel=orig.get("view_channel"),
+                        read_message_history=orig.get("read_message_history")
+                    )
+                    restored += 1
+            except Exception as e:
+                await log_error(f"restore permissions channel {channel.id}: {str(e)}")
+                continue
+        
+        return restored
+    except Exception as e:
+        await log_error(f"restore permissions: {str(e)}")
+        return 0
+
 # --- SHOP SYSTEM (Supabase) ---
 # Cooldown tracking for compliments (per user)
 COMPLIMENT_COOLDOWNS = {}
@@ -2574,7 +2779,16 @@ async def help_cmd(interaction: discord.Interaction):
         "🎲 **ATMOSPHERE**\n"
         "`/prophecy` — Receive an ominous prediction\n\n"
         
-        "🛡️ **ADMIN ONLY**\n"
+        "� **NIMBROR ALERT SYSTEM (NAS)**\n"
+        "🔴 **NAS-1** (Total Containment) — No messaging, files, embeds, or history\n"
+        "🟣 **NAS-2** (High Restriction) — No files/embeds. Read-only\n"
+        "🟠 **NAS-3** (Media Lock) — No files/embeds (except main channel)\n"
+        "🟡 **NAS-4** (Minor Restriction) — No file attachments\n"
+        "🟢 **NAS-5** (Normal Operation) — All features enabled\n"
+        "`/alertlevel <1-5>` — Set alert level (admin)\n"
+        "`/alertstatus` — View current NAS status\n\n"
+        
+        "�🛡️ **ADMIN ONLY**\n"
         "`/icewall @user` — 10m timeout\n"
         "`/purge [amount]` — Delete messages\n"
         "`/debug` — System check\n"
@@ -2771,6 +2985,353 @@ async def restart(interaction: discord.Interaction):
     )
     final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SYSTEMS OPERATIONAL")
     await msg.edit(embed=final_embed)
+
+# --- NIMBROR ALERT SYSTEM (NAS) BUTTON VIEW ---
+
+class NASControlPanel(discord.ui.View):
+    """Persistent view for NAS control buttons (staff only)."""
+    
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.cooldowns = {}
+    
+    def is_admin(self, interaction: discord.Interaction) -> bool:
+        """Check if user is admin."""
+        return interaction.user.guild_permissions.administrator
+    
+    def get_cooldown_key(self, user_id: int) -> str:
+        """Get cooldown key for user."""
+        return f"nas_{user_id}"
+    
+    def check_cooldown(self, user_id: int) -> bool:
+        """Check 3-second cooldown per user."""
+        now = time.time()
+        key = self.get_cooldown_key(user_id)
+        if key in self.cooldowns:
+            if now - self.cooldowns[key] < 3:
+                return False
+            self.cooldowns[key] = now
+        else:
+            self.cooldowns[key] = now
+        return True
+    
+    @discord.ui.button(label="Liability Scan", style=discord.ButtonStyle.red, emoji="🔴", custom_id="nas_liability_scan")
+    async def liability_scan(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Escalate to NAS-1 (Total Containment)."""
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
+        
+        if not self.check_cooldown(interaction.user.id):
+            await interaction.response.send_message("⏳ 3-second cooldown.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        current = await get_current_alert_level()
+        if current == 1:
+            await interaction.followup.send("⚠️ Already at NAS-1.", ephemeral=True)
+            return
+        
+        # Backup permissions before changes
+        await store_original_permissions(interaction.guild)
+        
+        # Apply NAS-1
+        modified = await apply_nas_restrictions(interaction.guild, 1)
+        await set_alert_level(1)
+        
+        # Send announcement
+        if ANNOUNCEMENT_CHANNEL_ID:
+            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            if ann_ch:
+                embed = discord.Embed(
+                    title="🚨 NIMBROR ALERT LEVEL ESCALATED",
+                    description="**NAS-1: TOTAL CONTAINMENT**\nAll messaging disabled.\nStaff may continue operations.",
+                    color=NAS_LEVELS[1]["color"],
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Modified Channels", value=f"{modified}", inline=True)
+                embed.add_field(name="Triggered By", value=interaction.user.mention, inline=True)
+                embed.set_footer(text="NIMBROR ALERT SYSTEM")
+                await ann_ch.send(embed=embed)
+        
+        await interaction.followup.send(f"✅ NAS-1 activated. {modified} channels modified.", ephemeral=True)
+    
+    @discord.ui.button(label="Status Report", style=discord.ButtonStyle.gray, emoji="📊", custom_id="nas_status_report")
+    async def status_report(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Show current NAS status."""
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
+        
+        if not self.check_cooldown(interaction.user.id):
+            await interaction.response.send_message("⏳ 3-second cooldown.", ephemeral=True)
+            return
+        
+        current = await get_current_alert_level()
+        level_info = NAS_LEVELS[current]
+        
+        status_embed = discord.Embed(
+            title="📊 NAS STATUS REPORT",
+            description=f"**Current Alert Level:** {current}\n**Status:** {level_info['name']}",
+            color=level_info["color"],
+            timestamp=datetime.now()
+        )
+        
+        # Add restriction info
+        if current == 1:
+            restrictions = "✋ No messaging, files, embeds, history"
+        elif current == 2:
+            restrictions = "🚫 No files, embeds. Read-only mode"
+        elif current == 3:
+            restrictions = "🔒 No files, embeds (except main channel)"
+        elif current == 4:
+            restrictions = "⚠️ No file attachments"
+        else:
+            restrictions = "✅ Normal operation"
+        
+        status_embed.add_field(name="Active Restrictions", value=restrictions, inline=False)
+        status_embed.add_field(name="Exception Channel", value=f"<#{NAS_EXCEPTION_CHANNEL}>", inline=True)
+        status_embed.set_footer(text="NIMBROR ALERT SYSTEM")
+        
+        await interaction.response.send_message(embed=status_embed, ephemeral=True)
+    
+    @discord.ui.button(label="Escalate", style=discord.ButtonStyle.blurple, emoji="📈", custom_id="nas_escalate")
+    async def escalate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Escalate to next level (lower number = higher restriction)."""
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
+        
+        if not self.check_cooldown(interaction.user.id):
+            await interaction.response.send_message("⏳ 3-second cooldown.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        current = await get_current_alert_level()
+        
+        if current == 1:
+            await interaction.followup.send("⚠️ Already at maximum escalation (NAS-1).", ephemeral=True)
+            return
+        
+        new_level = current - 1
+        
+        # Backup and apply
+        await store_original_permissions(interaction.guild)
+        modified = await apply_nas_restrictions(interaction.guild, new_level)
+        await set_alert_level(new_level)
+        
+        # Send announcement
+        if ANNOUNCEMENT_CHANNEL_ID:
+            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            if ann_ch:
+                embed = discord.Embed(
+                    title="⚠️ NIMBROR ALERT LEVEL ESCALATED",
+                    description=f"**NAS-{new_level}: {NAS_LEVELS[new_level]['name']}**\nRestrictions increased.",
+                    color=NAS_LEVELS[new_level]["color"],
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Previous Level", value=f"NAS-{current}", inline=True)
+                embed.add_field(name="New Level", value=f"NAS-{new_level}", inline=True)
+                embed.set_footer(text="NIMBROR ALERT SYSTEM")
+                await ann_ch.send(embed=embed)
+        
+        await interaction.followup.send(f"✅ Escalated to NAS-{new_level}. {modified} channels modified.", ephemeral=True)
+    
+    @discord.ui.button(label="De-escalate", style=discord.ButtonStyle.green, emoji="📉", custom_id="nas_deescalate")
+    async def deescalate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """De-escalate to next level (higher number = fewer restrictions)."""
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
+        
+        if not self.check_cooldown(interaction.user.id):
+            await interaction.response.send_message("⏳ 3-second cooldown.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        current = await get_current_alert_level()
+        
+        if current == 5:
+            await interaction.followup.send("✅ Already at normal operation (NAS-5).", ephemeral=True)
+            return
+        
+        new_level = current + 1
+        
+        # Backup and apply
+        await store_original_permissions(interaction.guild)
+        modified = await apply_nas_restrictions(interaction.guild, new_level)
+        await set_alert_level(new_level)
+        
+        # Send announcement
+        if ANNOUNCEMENT_CHANNEL_ID:
+            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            if ann_ch:
+                embed = discord.Embed(
+                    title="✅ NIMBROR ALERT LEVEL DE-ESCALATED",
+                    description=f"**NAS-{new_level}: {NAS_LEVELS[new_level]['name']}**\nRestrictions reduced.",
+                    color=NAS_LEVELS[new_level]["color"],
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Previous Level", value=f"NAS-{current}", inline=True)
+                embed.add_field(name="New Level", value=f"NAS-{new_level}", inline=True)
+                embed.set_footer(text="NIMBROR ALERT SYSTEM")
+                await ann_ch.send(embed=embed)
+        
+        await interaction.followup.send(f"✅ De-escalated to NAS-{new_level}. {modified} channels modified.", ephemeral=True)
+    
+    @discord.ui.button(label="Restore All", style=discord.ButtonStyle.success, emoji="✨", custom_id="nas_restore_all")
+    async def restore_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Restore to NAS-5 (Normal Operation)."""
+        if not self.is_admin(interaction):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return
+        
+        if not self.check_cooldown(interaction.user.id):
+            await interaction.response.send_message("⏳ 3-second cooldown.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        current = await get_current_alert_level()
+        
+        if current == 5:
+            await interaction.followup.send("✅ Already at normal operation.", ephemeral=True)
+            return
+        
+        # Restore permissions
+        restored = await restore_permissions(interaction.guild)
+        await set_alert_level(5)
+        
+        # Send announcement
+        if ANNOUNCEMENT_CHANNEL_ID:
+            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            if ann_ch:
+                embed = discord.Embed(
+                    title="✨ NIMBROR SYSTEMS RESTORED",
+                    description="**NAS-5: NORMAL OPERATION**\nAll restrictions lifted.",
+                    color=NAS_LEVELS[5]["color"],
+                    timestamp=datetime.now()
+                )
+                embed.add_field(name="Restored Channels", value=f"{restored}", inline=True)
+                embed.add_field(name="Triggered By", value=interaction.user.mention, inline=True)
+                embed.set_footer(text="NIMBROR ALERT SYSTEM")
+                await ann_ch.send(embed=embed)
+        
+        await interaction.followup.send(f"✅ NAS-5 (Normal) restored. {restored} channels restored.", ephemeral=True)
+
+# --- NAS COMMANDS ---
+
+@bot.tree.command(name="alertlevel", description="[ADMIN] Set NAS alert level (1-5)")
+@app_commands.describe(level="Alert level: 1=Total Containment to 5=Normal")
+async def alertlevel(interaction: discord.Interaction, level: int):
+    """Set the NIMBROR Alert Level."""
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Admin only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    if level < 1 or level > 5:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Invalid Level", "Alert level must be 1-5.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    await interaction.response.defer()
+    
+    current = await get_current_alert_level()
+    
+    if current == level:
+        await interaction.followup.send(
+            embed=create_embed("⚠️ No Change", f"Already at NAS-{level}.", color=EMBED_COLORS["warning"])
+        )
+        return
+    
+    # Backup and apply restrictions
+    await store_original_permissions(interaction.guild)
+    modified = await apply_nas_restrictions(interaction.guild, level)
+    await set_alert_level(level)
+    
+    # Send announcement
+    if ANNOUNCEMENT_CHANNEL_ID:
+        ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        if ann_ch:
+            level_info = NAS_LEVELS[level]
+            embed = discord.Embed(
+                title="🚨 NIMBROR ALERT LEVEL CHANGED",
+                description=f"**NAS-{level}: {level_info['name']}**",
+                color=level_info["color"],
+                timestamp=datetime.now()
+            )
+            embed.add_field(name="Previous Level", value=f"NAS-{current}", inline=True)
+            embed.add_field(name="New Level", value=f"NAS-{level}", inline=True)
+            embed.add_field(name="Channels Modified", value=str(modified), inline=True)
+            embed.add_field(name="Set By", value=interaction.user.mention, inline=False)
+            embed.set_footer(text="NIMBROR ALERT SYSTEM")
+            await ann_ch.send(embed=embed)
+    
+    # Send control panel to staff
+    if STAFF_CHANNEL_ID:
+        staff_ch = bot.get_channel(STAFF_CHANNEL_ID)
+        if staff_ch:
+            control_embed = discord.Embed(
+                title="📋 NAS CONTROL PANEL",
+                description=f"Current Alert Level: **NAS-{level}** ({NAS_LEVELS[level]['name']})",
+                color=NAS_LEVELS[level]["color"],
+                timestamp=datetime.now()
+            )
+            control_embed.add_field(name="Escalate", value="Press 'Escalate' to increase restrictions", inline=False)
+            control_embed.add_field(name="De-escalate", value="Press 'De-escalate' to reduce restrictions", inline=False)
+            control_embed.add_field(name="Restore", value="Press 'Restore All' to return to normal (NAS-5)", inline=False)
+            control_embed.set_footer(text="NIMBROR ALERT SYSTEM • Admin Only")
+            
+            await staff_ch.send(embed=control_embed, view=NASControlPanel())
+    
+    await interaction.followup.send(
+        embed=create_embed(
+            "✅ Alert Level Changed",
+            f"**NAS-{level}: {NAS_LEVELS[level]['name']}**\n{modified} channels modified.",
+            color=EMBED_COLORS["success"]
+        )
+    )
+
+@bot.tree.command(name="alertstatus", description="View current NAS alert level")
+async def alertstatus(interaction: discord.Interaction):
+    """Show current NIMBROR Alert status."""
+    current = await get_current_alert_level()
+    level_info = NAS_LEVELS[current]
+    
+    # Determine restrictions based on level
+    if current == 1:
+        restrictions = "🔴 **Total Containment**: No messaging, files, embeds, or message history"
+    elif current == 2:
+        restrictions = "🟣 **High Restriction**: No files or embeds. Read-only access to history"
+    elif current == 3:
+        restrictions = "🟠 **Media Lock**: No files or embeds (except main channel)"
+    elif current == 4:
+        restrictions = "🟡 **Minor Restriction**: No file attachments allowed"
+    else:
+        restrictions = "🟢 **Normal Operation**: All features enabled"
+    
+    status_embed = discord.Embed(
+        title="📊 NIMBROR ALERT STATUS",
+        description=f"**Current Level: NAS-{current}**\n{level_info['name']}",
+        color=level_info["color"],
+        timestamp=datetime.now()
+    )
+    status_embed.add_field(name="Active Restrictions", value=restrictions, inline=False)
+    
+    if current != 5:
+        status_embed.add_field(name="Exception Channel", value=f"<#{NAS_EXCEPTION_CHANNEL}> can post media during NAS-3", inline=False)
+    
+    status_embed.set_footer(text="NIMBROR ALERT SYSTEM")
+    
+    await interaction.response.send_message(embed=status_embed, ephemeral=False)
 
 @bot.tree.command(name="spam", description="[OWNER] Controlled ping system")
 async def spam(interaction: discord.Interaction, user: discord.Member, message: str):
@@ -4426,6 +4987,14 @@ async def on_ready():
             await start_http_server()
         except Exception as e:
             print(f"⚠️ Failed to start HTTP server: {e}")
+
+    # Register NAS persistent view
+    try:
+        bot.add_view(NASControlPanel())
+        print("✅ NAS Control Panel view registered (persistent)")
+    except Exception as e:
+        print(f"⚠️ Failed to register NAS view: {e}")
+        await log_error(f"NAS view registration: {e}")
 
     # Ensure app commands are synced (once per session)
     if not COMMANDS_SYNCED:
