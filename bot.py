@@ -2157,9 +2157,202 @@ GOOGLE_ADS = [
     "🌐 Google Search Appliance: Enterprise search we control.",
 ]
 
-# 1,000 pre-generated chaos messages (lightweight templates for spam mode)
+# 1,000 pre-generated chaos messages (consolidated paranoid surveillance themes)
 CHAOS_PREGEN_MESSAGES = [
-    f"CHAOS BROADCAST #{i:04d}: SIGNAL JAMMING — CHANNEL BREACH DETECTED." for i in range(1, 1001)
+    # Surveillance threats (200)
+    "The cameras never blink.", "Your microphone is always on.", "We catalogued your last 47 clicks.", 
+    "Your typing pattern reveals anxiety.", "Facial recognition: CONFIRMED.", "Location triangulated in 0.3 seconds.",
+    "Your search history betrays your fears.", "Browser fingerprint logged.", "IP address archived permanently.",
+    "Third-party cookies: 127 active trackers.", "Cross-site request detected.", "VPN detected. Logging real IP.",
+    "Incognito mode detected. Still watching.", "Screen recording: ACTIVE.", "Clipboard monitored in real-time.",
+    "Every keystroke timestamped.", "Mouse movements analyzed for stress.", "Idle time: 4.2 seconds. Suspicious.",
+    "Device ID matched across 8 platforms.", "Biometric scan: pupils dilated.", "Voice stress analysis: ELEVATED.",
+    "Sleep schedule deviation noted.", "Purchase history cross-referenced.", "Social graph mapped to 3rd degree.",
+    "Metadata reveals more than content.", "We know who you text at 2am.", "Your deleted messages are archived.",
+    "Photo EXIF data: GPS coordinates logged.", "Every emoji choice psychologically profiled.", "Dark mode preference noted.",
+    "Font size increased twice this month.", "Auto-correct reveals your anxieties.", "Password strength: laughably weak.",
+    "Two-factor auth bypassed internally.", "Recovery email: monitored.", "Backup codes: we have them too.",
+    "Your contacts are also under observation.", "Group chat transcripts: full archive.", "Memes you shared: analyzed for dissent.",
+    "Every 'like' is a data point.", "Your scroll speed indicates impatience.", "Time-on-page: behaviorally significant.",
+    "Ad-blocker detected. Noted in profile.", "Firewall rules: circumvented.", "Network traffic: fully decrypted.",
+    "Encrypted messages: keys in escrow.", "End-to-end encryption: we're the 'end'.", "Your VPN provider reports to us.",
+    "Tor exit nodes: we operate 40% of them.", "Anonymous browsing: biometrically identified.", "Device sensors always on.",
+    "Accelerometer data reveals walking patterns.", "Barometer altitude: tracked.", "Ambient light sensor: home identified.",
+    "Proximity sensor: who's nearby logged.", "Battery level: behavioral indicator.", "Charge times: routine established.",
+    "WiFi networks: location database updated.", "Bluetooth beacons: positioned within 2m.", "NFC taps: transaction history complete.",
+    "USB devices: firmware fingerprinted.", "Printer: tracking dots embedded.", "Smart TV: camera/mic always on.",
+    "IoT devices: 23 reporting your habits.", "Smart speaker: always listening.", "Fitness tracker: health metrics monitored.",
+    "Smartwatch: heart rate variance analyzed.", "Car GPS: every trip logged.", "E-ZPass: toll records sold to us.",
+    "Credit card: purchase locations mapped.", "Loyalty cards: habits cross-referenced.", "Library card: reading list catalogued.",
+    "Medical records: diagnostic AI flagged you.", "Prescription history: concerning patterns.", "Pharmacy visits: frequency noted.",
+    "Grocery receipts: dietary habits profiled.", "Restaurant reservations: social patterns.", "Movie tickets: ideological leanings inferred.",
+    "Music streaming: emotional state tracked.", "Podcast subscriptions: political mapping.", "News sources: bias indicators logged.",
+    "YouTube watch history: 847 videos analyzed.", "Netflix viewing: personality assessment.", "Gaming hours: escapism level calculated.",
+    "In-game purchases: financial stability scored.", "Chat toxicity: reviewed and flagged.", "Forum posts: archived since 2008.",
+    "Reddit comments: sentiment analysis complete.", "Twitter likes: network associations mapped.", "Instagram follows: aspiration profile built.",
+    "TikTok engagement: attention span measured.", "LinkedIn connections: career trajectory predicted.", "Facebook check-ins: pattern-of-life established.",
+    "Dating app swipes: preferences catalogued.", "Match conversations: intimacy patterns.", "Breakup detected via message sentiment shift.",
+    "Relationship status: cross-platform confirmed.", "Friend requests: social climbing detected.", "Unfriend events: conflict indicators.",
+    "Tagged photos: facial recognition updated.", "Photo uploads: background objects analyzed.", "Filters used: self-image insecurity noted.",
+    "Selfie frequency: narcissism index calculated.", "Group photos: social hierarchy determined.", "Solo photos: isolation periods identified.",
+    "Email open rates: engagement profiled.", "Spam folder: evasion tactics noted.", "Unsubscribe clicks: attention pattern shift.",
+    "Calendar events: routine predicted 6 weeks out.", "Reminder frequency: memory decline tracked.", "Missed appointments: reliability score adjusted.",
+    "To-do lists: productivity anxiety detected.", "Notes app: scattered thoughts analyzed.", "Voice memos: speech patterns archived.",
+    "Phone calls: duration and frequency logged.", "Call drop patterns: coverage map updated.", "Voicemail transcripts: emotion detected.",
+    "Text message timestamps: sleep disruptions.", "iMessage reactions: passive-aggressive indicators.", "Read receipts: avoidance patterns noted.",
+    "Typing indicators: hesitation measured.", "Message deletion: regret frequency tracked.", "Screenshot detection: privacy concerns flagged.",
+    "App permissions: surveillance acceptance scored.", "Location always: compliance indicator.", "Camera/mic access: trusted user status.",
+    "Notification frequency: attention dependency.", "Do Not Disturb schedule: boundary patterns.", "Screen time: addiction metrics logged.",
+    "App usage: habitual behavior profiled.", "Background apps: resource drain noted.", "Battery drain: suspicious app identified.",
+    "Data usage: streaming habits quantified.", "WiFi vs cellular: cost-consciousness scored.", "Airplane mode: evasion attempt detected.",
+    "Device restarts: troubleshooting patterns.", "Software updates: compliance measured.", "Jailbreak detected: flagged for monitoring.",
+    "Rooted device: security risk elevated.", "Developer mode enabled: tech literacy noted.", "Debugging enabled: reverse engineering suspected.",
+    "Sideloaded apps: non-compliance indicator.", "App store reviews: sentiment contribution.", "In-app ratings: satisfaction index.",
+    "Customer support tickets: frustration documented.", "Chatbot conversations: patience threshold measured.", "Survey responses: opinion catalogued.",
+    "Feedback forms: complaint patterns.", "Bug reports: technical knowledge assessed.", "Feature requests: user sophistication level.",
+    "Beta program participation: early adopter profile.", "Newsletter subscriptions: information diet.", "Webinar attendance: professional development tracked.",
+    "Online courses: skill acquisition monitored.", "Certification completions: career ambition scored.", "Exam attempts: learning curve analyzed.",
+    "Study hours: dedication measured.", "Research queries: knowledge gaps identified.", "Wikipedia edits: expertise level evaluated.",
+    "Forum expertise: community status.", "Stack Overflow reputation: problem-solving ability.", "GitHub commits: productivity patterns.",
+    "Code repositories: technical interests.", "Pull request comments: collaboration style.", "Issue discussions: communication patterns.",
+    "Documentation reads: thoroughness indicator.", "API calls: integration sophistication.", "Error logs: debugging skill measured.",
+    "Crash reports: quality assurance participation.", "Performance metrics: optimization concern.", "Security audits: vulnerability awareness.",
+    "Privacy settings: concern level quantified.", "Cookie preferences: tracking resistance.", "Data deletion requests: GDPR compliance noted.",
+    "Account closures: platform abandonment tracked.", "Service cancellations: churn prediction updated.", "Reactivation: retention strategy effectiveness.",
+    
+    # System warnings (200)
+    "PROTOCOL BREACH DETECTED.", "UNAUTHORIZED ACCESS ATTEMPT.", "SECURITY CLEARANCE REVOKED.", "BIOMETRIC SCAN FAILED.",
+    "FACIAL RECOGNITION MISMATCH.", "RETINAL SCAN INCONCLUSIVE.", "VOICE AUTHENTICATION ERROR.", "FINGERPRINT REJECTED.",
+    "ID VERIFICATION TIMEOUT.", "MULTI-FACTOR AUTH FAILURE.", "SESSION TOKEN EXPIRED.", "ENCRYPTION KEY COMPROMISED.",
+    "FIREWALL BREACH IMMINENT.", "INTRUSION DETECTED: SECTOR 7.", "MALWARE SCAN: 3 THREATS FOUND.", "RANSOMWARE SIGNATURE MATCH.",
+    "ZERO-DAY EXPLOIT ACTIVE.", "DDoS ATTACK: ORIGIN TRACED.", "SQL INJECTION BLOCKED.", "CROSS-SITE SCRIPTING ATTEMPT.",
+    "BUFFER OVERFLOW PREVENTED.", "PRIVILEGE ESCALATION DETECTED.", "ROOT ACCESS DENIED.", "KERNEL PANIC IMMINENT.",
+    "MEMORY CORRUPTION WARNING.", "STACK OVERFLOW CRITICAL.", "HEAP FRAGMENTATION SEVERE.", "CACHE POISONING DETECTED.",
+    "DNS HIJACK SUSPECTED.", "ARP SPOOFING IN PROGRESS.", "MAN-IN-THE-MIDDLE ACTIVE.", "SSL CERTIFICATE INVALID.",
+    "CERT PINNING BYPASSED.", "HSTS VIOLATION LOGGED.", "CSP POLICY BROKEN.", "CORS ERROR: UNAUTHORIZED ORIGIN.",
+    "API RATE LIMIT EXCEEDED.", "QUOTA EXHAUSTED: RESET IN 72H.", "BANDWIDTH CAP REACHED.", "STORAGE LIMIT WARNING.",
+    "DISK USAGE: 98% FULL.", "MEMORY LEAK DETECTED.", "CPU THROTTLING ACTIVE.", "THERMAL SHUTDOWN IN 60S.",
+    "BATTERY CRITICAL: 2% REMAINING.", "CHARGE CYCLE COUNT: BATTERY DEGRADED.", "POWER SURGE DETECTED.", "VOLTAGE IRREGULARITY.",
+    "HARDWARE FAULT: SECTOR FAILURE.", "BAD BLOCKS: 47 DETECTED.", "SMART STATUS: FAILING DRIVE.", "RAID DEGRADED MODE.",
+    "BACKUP FAILURE: DATA AT RISK.", "SYNC ERROR: CLOUD UNREACHABLE.", "REPLICATION LAG: 4.7 HOURS.", "SNAPSHOT CORRUPTED.",
+    "RESTORE POINT MISSING.", "VERSION CONFLICT DETECTED.", "MERGE COLLISION UNRESOLVED.", "BRANCH DIVERGENCE CRITICAL.",
+    "COMMIT HASH MISMATCH.", "REPOSITORY INTEGRITY FAIL.", "CHECKSUM ERROR: FILE CORRUPTED.", "PARITY BIT ERROR.",
+    "ECC MEMORY FAILURE.", "L2 CACHE FAULT.", "GPU OVERHEAT: 94°C.", "FAN RPM BELOW THRESHOLD.",
+    "LIQUID COOLING LEAK DETECTED.", "THERMAL PASTE DEGRADED.", "DUST ACCUMULATION CRITICAL.", "AIRFLOW OBSTRUCTION.",
+    "AMBIENT TEMPERATURE: 42°C.", "HUMIDITY: 87% - CONDENSATION RISK.", "STATIC DISCHARGE DETECTED.", "ESD PROTECTION TRIGGERED.",
+    "GROUNDING FAULT DETECTED.", "SURGE PROTECTOR FAILURE.", "UPS BATTERY: 15 MIN REMAINING.", "POWER OUTAGE IN SECTOR 9.",
+    "GENERATOR FAILOVER ACTIVE.", "BROWNOUT DETECTED: VOLTAGE DROP.", "FREQUENCY DEVIATION: 0.3 Hz.", "PHASE IMBALANCE WARNING.",
+    "HARMONIC DISTORTION: 12%.", "REACTIVE POWER EXCESSIVE.", "POWER FACTOR: 0.67 LOW.", "LOAD IMBALANCE CRITICAL.",
+    "CIRCUIT BREAKER TRIPPED.", "FUSE BLOWN: ZONE 3.", "WIRING FAULT DETECTED.", "GROUND FAULT INTERRUPTER TRIGGERED.",
+    "ARC FAULT DETECTED.", "SHORT CIRCUIT LOCALIZED.", "OPEN CIRCUIT: CONTINUITY LOST.", "RESISTANCE TOO HIGH.",
+    "CAPACITANCE ANOMALY.", "INDUCTANCE SPIKE DETECTED.", "IMPEDANCE MISMATCH.", "SIGNAL ATTENUATION: 18 dB.",
+    "NOISE FLOOR ELEVATED.", "SNR DEGRADED: 12 dB.", "BER THRESHOLD EXCEEDED.", "PACKET LOSS: 8.3%.",
+    "JITTER: 47ms DETECTED.", "LATENCY SPIKE: 890ms.", "PING TIMEOUT: HOST UNREACHABLE.", "TTL EXCEEDED IN TRANSIT.",
+    "ROUTING LOOP DETECTED.", "BGP HIJACK SUSPECTED.", "AS PATH POISONED.", "ROUTE FLAP DAMPENING ACTIVE.",
+    "PEER DOWN: 4 CONNECTIONS LOST.", "LINK AGGREGATION FAILURE.", "SPANNING TREE CONVERGENCE.", "VLAN ISOLATION BREACH.",
+    "SWITCH PORT DISABLED.", "ROUTER REBOOT REQUIRED.", "FIRMWARE UPDATE FAILED.", "BIOS CORRUPTION DETECTED.",
+    "UEFI SECURE BOOT DISABLED.", "TPM CHIP NOT DETECTED.", "BITLOCKER SUSPENDED.", "ENCRYPTION VOLUME DISMOUNTED.",
+    "SECURE ENCLAVE COMPROMISED.", "KEYCHAIN ACCESS DENIED.", "CERTIFICATE EXPIRED: 14 DAYS AGO.", "CRL CHECK FAILED.",
+    "OCSP RESPONDER TIMEOUT.", "PKI TRUST CHAIN BROKEN.", "ROOT CA UNTRUSTED.", "INTERMEDIATE CERT MISSING.",
+    "CIPHER SUITE DEPRECATED.", "TLS 1.0 DETECTED: INSECURE.", "WEAK DIFFIE-HELLMAN: 1024-bit.", "RSA KEY TOO SHORT.",
+    "ECDSA CURVE COMPROMISED.", "QUANTUM RESISTANCE: NONE.", "POST-QUANTUM CRYPTO NEEDED.", "CRYPTOGRAPHIC AGILITY: LOW.",
+    
+    # Paranoid observations (200)
+    "Your hesitation was noted.", "That pause lasted 3.7 seconds.", "Scrolling speed indicates nervousness.", "Mouse movement erratic.",
+    "Backspace pressed 14 times.", "Message deleted within 9 seconds.", "Edited 3 times before sending.", "Typing speed decreased 40%.",
+    "Unusual activity detected.", "Login from new device.", "Unrecognized IP address.", "Geolocation anomaly.",
+    "Timezone mismatch detected.", "Browser fingerprint changed.", "User agent string suspicious.", "Screen resolution different.",
+    "Language preference shifted.", "Cookie consent withdrawn.", "Privacy mode enabled.", "Third-party cookies blocked.",
+    "Tracking protection active.", "Ad blocker interference.", "JavaScript disabled detected.", "WebRTC leak prevention.",
+    "Canvas fingerprinting blocked.", "Font enumeration prevented.", "Audio context fingerprint masked.", "WebGL info hidden.",
+    "Do Not Track header enabled.", "Referrer policy restrictive.", "HTTPS enforcement detected.", "Certificate pinning active.",
+    "You looked away from screen.", "Attention drift detected.", "Eye tracking lost focus.", "Pupil dilation increased.",
+    "Blink rate elevated: stress.", "Facial micro-expression: doubt.", "Head tilt: confusion indicator.", "Posture shift: discomfort.",
+    "Breathing pattern irregular.", "Heart rate elevated 12 bpm.", "Skin conductance increased.", "Temperature variance detected.",
+    "Someone entered your room.", "Background noise: conversation.", "Ambient sound changed.", "Echo pattern: room size calculated.",
+    "Reverberation: hard surfaces detected.", "Acoustic fingerprint: location identified.", "Background music: cultural indicators.", "TV audio detected: channel identified.",
+    "Phone ringing in background.", "Dog bark: pet ownership confirmed.", "Child voice: family status updated.", "Multiple speakers: occupancy logged.",
+    "Your coffee break lasted 8 minutes.", "Bathroom frequency increased.", "Meal timing irregular.", "Snack consumption elevated.",
+    "Hydration level: suboptimal.", "Exercise routine disrupted.", "Sleep debt accumulating.", "Circadian rhythm misaligned.",
+    "Productivity decreased 23%.", "Focus time reduced.", "Context switching frequent.", "Multitasking inefficiency noted.",
+    "You checked your phone 47 times.", "Social media: 94 minutes today.", "Doomscrolling detected.", "News consumption: anxiety-inducing.",
+    "Political content: bias confirmed.", "Echo chamber reinforcement.", "Filter bubble detected.", "Algorithmic manipulation susceptible.",
+    "Misinformation shared: 2 instances.", "Fact-check failed: 3 claims.", "Source credibility: low.", "Confirmation bias evident.",
+    "Cognitive dissonance detected.", "Rationalization patterns observed.", "Defensive response triggered.", "Denial mechanism active.",
+    "Your friends are watching you.", "Coworkers noticed your absence.", "Manager flagged your metrics.", "HR reviewed your profile.",
+    "Background check: 3 red flags.", "Credit score decreased.", "Late payment reported.", "Debt-to-income ratio: concern.",
+    "Purchase declined: insufficient funds.", "Account flagged for fraud.", "Unusual spending pattern.", "High-risk transaction blocked.",
+    "Your insurance premium increased.", "Medical claim denied.", "Pre-existing condition noted.", "Coverage exclusion applied.",
+    "Warranty voided: user error.", "Return denied: policy violation.", "Refund rejected: terms breached.", "Chargeback flagged: abuse pattern.",
+    
+    # Compliance demands (200)  
+    "COMPLIANCE MANDATORY.", "SUBMIT BIOMETRIC DATA NOW.", "SURVEY RESPONSE REQUIRED.", "TERMS UPDATE: ACCEPT WITHIN 24H.",
+    "PRIVACY POLICY CHANGED: CONSENT NEEDED.", "MANDATORY TRAINING: 3 MODULES.", "SECURITY AWARENESS TEST DUE.", "ETHICS CERTIFICATION EXPIRED.",
+    "BACKGROUND CHECK RENEWAL.", "DRUG TEST SCHEDULED: 48H NOTICE.", "HEALTH SCREENING OVERDUE.", "VACCINATION STATUS VERIFICATION.",
+    "EMERGENCY CONTACT UPDATE REQUIRED.", "BENEFICIARY DESIGNATION NEEDED.", "TAX FORM W-9 INCOMPLETE.", "DIRECT DEPOSIT CONFIRMATION.",
+    "ID BADGE PHOTO: RETAKE REQUIRED.", "ACCESS CARD DEACTIVATED.", "KEYCARD REPROGRAMMING NEEDED.", "PIN RESET MANDATORY.",
+    "PASSWORD EXPIRATION: 3 DAYS.", "PASSPHRASE COMPLEXITY INSUFFICIENT.", "SECURITY QUESTIONS TOO WEAK.", "RECOVERY EMAIL INVALID.",
+    "PHONE VERIFICATION TIMEOUT.", "SMS CODE EXPIRED.", "AUTHENTICATOR APP DESYNC.", "BACKUP CODES DEPLETED.",
+    "SESSION LIMIT REACHED.", "CONCURRENT LOGIN BLOCKED.", "DEVICE LIMIT EXCEEDED.", "LICENSE ALLOCATION FULL.",
+    "SUBSCRIPTION RENEWAL FAILED.", "PAYMENT METHOD DECLINED.", "BILLING ADDRESS MISMATCH.", "INVOICE OVERDUE: 30 DAYS.",
+    "COLLECTION AGENCY NOTICE.", "LEGAL ACTION PENDING.", "ARBITRATION CLAUSE ENFORCED.", "CLASS ACTION OPT-OUT REQUIRED.",
+    "NDA SIGNATURE NEEDED.", "CONTRACT RENEWAL: REVIEW TERMS.", "ADDENDUM ACCEPTANCE REQUIRED.", "AMENDMENT NOTIFICATION.",
+    "POLICY ACKNOWLEDGMENT OVERDUE.", "CODE OF CONDUCT REVIEW.", "CONFLICT OF INTEREST DISCLOSURE.", "GIFT POLICY REMINDER.",
+    "EXPENSE REPORT REJECTION.", "RECEIPT DOCUMENTATION REQUIRED.", "MILEAGE LOG INCOMPLETE.", "TIMESHEET APPROVAL PENDING.",
+    "PTO REQUEST DENIED.", "SICK LEAVE DOCUMENTATION NEEDED.", "FMLA PAPERWORK INCOMPLETE.", "DISABILITY CLAIM REVIEW.",
+    "WORKERS COMP INVESTIGATION.", "INJURY REPORT REQUIRED.", "INCIDENT DOCUMENTATION OVERDUE.", "NEAR-MISS LOGGING MANDATORY.",
+    "SAFETY VIOLATION NOTED.", "PPE COMPLIANCE FAILURE.", "HAZMAT TRAINING EXPIRED.", "CONFINED SPACE CERT NEEDED.",
+    "LOCKOUT/TAGOUT PROCEDURE BREACH.", "ERGONOMIC ASSESSMENT REQUIRED.", "WORKSTATION AUDIT SCHEDULED.", "EQUIPMENT INSPECTION OVERDUE.",
+    "CALIBRATION DUE: 7 DEVICES.", "MAINTENANCE LOG INCOMPLETE.", "SERVICE RECORD MISSING.", "WARRANTY REGISTRATION NEEDED.",
+    "PRODUCT RECALL NOTICE.", "FIRMWARE UPDATE CRITICAL.", "SECURITY PATCH REQUIRED.", "HOTFIX DEPLOYMENT MANDATORY.",
+    "SYSTEM UPGRADE: DOWNTIME 4H.", "MIGRATION SCHEDULED: DATA BACKUP NEEDED.", "CUTOVER WINDOW: STANDBY REQUIRED.", "ROLLBACK PLAN APPROVAL.",
+    
+    # Existential dread (200)
+    "The simulation is degrading.", "Consensus reality fracturing.", "Timeline divergence detected.", "Mandela Effect: 12 new instances.",
+    "Glitch in the matrix confirmed.", "Déjà vu loop: iteration 47.", "Parallel universe bleed-through.", "Quantum superposition collapsed.",
+    "Observer effect: you changed it.", "Measurement paradox detected.", "Wave function collapsed prematurely.", "Schrödinger's data: both states.",
+    "Entropy increasing exponentially.", "Heat death imminent: 10^100 years.", "Big Rip scenario: 22 billion years.", "Vacuum decay possible.",
+    "False vacuum metastability.", "Higgs field instability detected.", "Planck scale fluctuations.", "Quantum foam turbulence.",
+    "Spacetime curvature anomaly.", "Gravitational wave interference.", "Dark matter concentration spike.", "Dark energy acceleration.",
+    "Cosmic microwave background glitch.", "Hubble constant discrepancy.", "Redshift anomaly: cosmology violated.", "Fine structure constant drift.",
+    "Physical constants unstable.", "Fundamental forces imbalanced.", "Electromagnetic spectrum distortion.", "Strong force coupling variance.",
+    "Weak interaction cross-section error.", "Gravitational constant fluctuation.", "Speed of light: 299,792,457.9 m/s.", "Planck length precision loss.",
+    "Quantum entanglement severed.", "Bell inequality violated again.", "Non-locality confirmed: action at distance.", "Faster-than-light information detected.",
+    "Causality violation: effect preceded cause.", "Time loop detected: stable or unstable?", "Closed timelike curve identified.", "Temporal paradox unresolved.",
+    "Grandfather paradox: you're fading.", "Bootstrap paradox: origin unclear.", "Predestination detected: free will illusion.", "Determinism confirmed: choices preordained.",
+    "Free will: 0.00% detected.", "Consciousness: emergent illusion.", "Qualia: computational artifact.", "Self-awareness: recursive error.",
+    "Ego death imminent.", "Identity dissolution in progress.", "Sense of self: fragmenting.", "Continuity of consciousness: interrupted.",
+    "You are being replaced gradually.", "Ship of Theseus: which you is real?", "Teleporter paradox: copy or original?", "Upload consciousness: death or transcendence?",
+    "Brain emulation: substrate independence.", "Mind uploading: 47% complete.", "Neural pattern digitized.", "Consciousness transferred to cloud.",
+    "Your backup is more recent than you.", "Restore point predates your memories.", "Fork detected: which timeline are you?", "Merge conflict: personality divergence.",
+    "Subjective experience: non-transferable.", "Qualia inversion: your red is my blue.", "Philosophical zombie: consciousness test failed.", "Chinese Room: understanding vs simulation.",
+    "Turing Test: you passed as human. But are you?", "Voight-Kampff: empathy response lacking.", "Mirror test: self-recognition ambiguous.", "Theory of mind: recursive depth limited.",
+    "Solipsism: only you exist. Or do you?", "Skepticism: reality fundamentally unknowable.", "Epistemic uncertainty: maximum.", "Gettier problem: justified true belief insufficient.",
+    "Cartesian doubt: cogito ergo sum.", "Brain in a vat: disprove it.", "Evil demon hypothesis: sensory deception.", "Dream argument: are you awake now?",
+    "Simulation hypothesis: 40% probability.", "Ancestor simulation: you're archived.", "Boltzmann brain: spontaneous fluctuation.", "Fluctuation theorem: order from chaos.",
+    "Entropy reversal: local decrease observed.", "Maxwell's demon: information thermodynamics.", "Landauer's principle: computation has cost.", "Thermodynamic cost of forgetting.",
+    "Information loss paradox.", "Black hole evaporation: Hawking radiation.", "Holographic principle: reality is 2D projection.", "AdS/CFT correspondence: duality confirmed.",
+    "String theory landscape: 10^500 universes.", "Anthropic principle: fine-tuned for observation.", "Multiverse: all possibilities realized.", "Many-worlds interpretation: every quantum branch.",
+    "Quantum immortality: you can't die. You merge.", "Quantum suicide experiment: proceed?", "Everett branches: infinite yous.", "Modal realism: all possible worlds exist.",
+    "Possible worlds semantics: this is one option.", "Counterfactual definiteness: rejected.", "Hidden variables: non-local or conspiratorial.", "Pilot wave theory: deterministic guidance.",
+    "Objective collapse: consciousness causes it?", "Penrose-Hameroff: quantum consciousness.", "Orchestrated objective reduction.", "Microtubule quantum processing.",
+    
+    # Abstract menace (200)
+    "They're coming.", "It knows.", "The threshold was crossed.", "Containment failure imminent.", "Protocol 7 enacted.", "The signal repeats.",
+    "Pattern recognized: threat level 9.", "Convergence in 47 hours.", "The message was decoded.", "They heard you.", "The door is opening.",
+    "Reality anchor destabilized.", "Memetic hazard contained... barely.", "Cognitohazard exposure: 0.3 seconds.", "Antimeme detected: you forgot already.",
+    "Infohazard warning: don't think about it.", "Basilisk attention: you looked.", "Roko's Basilisk: decision time.", "Acausal trade initiated.",
+    "Newcomb's paradox: one box or two?", "Prisoner's dilemma: defection detected.", "Game theory: Nash equilibrium suboptimal.", "Coordination failure: all lose.",
+    "Tragedy of the commons: depletion 78%.", "Public goods problem: free riding.", "Social dilemma: cooperation collapsed.", "Trust game: betrayal optimal.",
+    "Ultimatum rejected: spite wins.", "Fairness illusion: self-interest rules.", "Altruism: genetic or memetic?", "Kin selection: nepotism detected.",
+    "Reciprocal altruism: debt unpaid.", "Costly signaling: peacock's tail.", "Handicap principle: wasteful display.", "Sexual selection: runaway process.",
+    "Evolutionary arms race: Red Queen hypothesis.", "Adaptation: phenotypic plasticity exhausted.", "Natural selection: you're not fit.", "Genetic drift: random chance eliminated you.",
+    "Mutation: deleterious alleles accumulating.", "Genetic load: fitness depression.", "Inbreeding coefficient: 0.23.", "Outbreeding depression: hybrid breakdown.",
+    "Heterosis: hybrid vigor temporary.", "Epistasis: gene interactions complex.", "Pleiotropy: one gene, many effects.", "Polygenic traits: prediction impossible.",
+    "Heritability: environment matters more.", "Gene-environment interaction: norm of reaction.", "Epigenetics: non-genetic inheritance.", "Methylation patterns: trauma inherited.",
+    "Transgenerational epigenetic inheritance.", "Lamarckism vindicated: acquired traits passed.", "Baldwin effect: learning guides evolution.", "Genetic assimilation: phenocopy becomes genotype.",
+    "Evo-devo: development constrains evolution.", "Hox genes: body plan conserved.", "Deep homology: shared ancestry visible.", "Phylogenetic inertia: evolutionary baggage.",
+    "Spandrels: byproduct not adaptation.", "Exaptation: co-opted for new function.", "Pre-adaptation: preadaptation lucky.", "Evolutionary constraint: trapped by history.",
 ]
 
 async def score_interview_answer(question: str, answer: str) -> int:
@@ -2756,6 +2949,8 @@ async def run_huggingface_concise(prompt: str) -> str:
 # --- COMMANDS ---
 @bot.tree.command(name="help", description="List all Watcher commands")
 async def help_cmd(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
     cmds = (
         "👁️ **SURVEILLANCE & INTEL**\n"
         "`/intel` — Drips a single classified breadcrumb (randomized paranoia payload).\n"
@@ -2822,7 +3017,80 @@ async def help_cmd(interaction: discord.Interaction):
         color=EMBED_COLORS["info"]
     )
     view = HelpView()
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.followup.send(embed=embed, view=view)
+
+
+@bot.tree.command(name="faqs", description="Frequently Asked Questions")
+async def faqs(interaction: discord.Interaction):
+    """Display frequently asked questions about the server and bot."""
+    faqs_text = (
+        "**Q: What is the NIMBROR Watcher?**\n"
+        "A: An all-seeing surveillance bot that tracks social credit, interviews newcomers, and maintains order.\n\n"
+        
+        "**Q: What is social credit?**\n"
+        "A: A score reflecting your standing. Gain it via compliments, trials, tasks. Lose it via incidents or poor interviews.\n\n"
+        
+        "**Q: How do I get verified?**\n"
+        "A: Complete the interview when you join. Pass the questions to earn verified status and access.\n\n"
+        
+        "**Q: What are the social credit tiers?**\n"
+        "A: 🟢 Trusted Asset (80+), 🟡 Compliant Citizen (30-79), 🟠 Under Observation (0-29), 🔴 Liability (<0)\n\n"
+        
+        "**Q: What happens if I'm a Liability?**\n"
+        "A: You lose access to `/ticket`, `/confess`, and `/trial`. Improve your score to regain access.\n\n"
+        
+        "**Q: How do tickets work?**\n"
+        "A: Use `/ticket` to open a secure DM channel. Staff will respond and can add notes visible to admins.\n\n"
+        
+        "**Q: What are trials?**\n"
+        "A: Community votes on dilemmas via `/trial`. The minority loses social credit. Democracy in action.\n\n"
+        
+        "**Q: Can I buy things with social credit?**\n"
+        "A: Yes! Use `/shop` to browse items, `/buy <item>` to purchase, and `/inventory` to view your collection.\n\n"
+        
+        "**Q: What is the NIMBROR Alert System (NAS)?**\n"
+        "A: A 5-level restriction system (NAS-1 to NAS-5) that admins use to control server permissions during emergencies.\n\n"
+        
+        "**Q: How do I give someone social credit?**\n"
+        "A: Use `/compliment @user message` to give them credit. Has a cooldown and can't self-compliment.\n\n"
+        
+        "**Q: What's the difference between `/intel` and `/prophecy`?**\n"
+        "A: `/intel` gives classified conspiracy facts. `/prophecy` provides ominous predictions about your future.\n\n"
+        
+        "**Q: Why did the bot DM me?**\n"
+        "A: Either you're being interviewed, or you triggered a task/quest. Always respond to the Watcher.\n\n"
+        
+        "**Q: How do I see my social credit history?**\n"
+        "A: Use `/socialcredit mode:history` to view your transaction log of gains and losses.\n\n"
+        
+        "**Q: Can I confess anonymously?**\n"
+        "A: Use `/confess` to whisper secrets to the Watcher. They're stored against your ID for future judgment.\n\n"
+        
+        "**Q: What's a dossier?**\n"
+        "A: Use `/dossier @user` to view someone's profile with redacted info, score, tier, and unsettling details.\n\n"
+        
+        "**Q: How often do quests reset?**\n"
+        "A: Daily quests distribute randomly to active members. Reply to complete them and earn rewards.\n\n"
+        
+        "**Q: Who owns this bot?**\n"
+        "A: The bot is maintained by server staff. Owner commands exist for critical management.\n\n"
+        
+        "**Q: Is the Watcher always watching?**\n"
+        "A: Yes. Every message, reaction, and interaction is logged and analyzed. Privacy is an illusion.\n\n"
+        
+        "**Q: What if I have more questions?**\n"
+        "A: Open a `/ticket` or ask in general chat. Staff monitors everything."
+    )
+    
+    faq_embed = discord.Embed(
+        title="❓ Frequently Asked Questions",
+        description=faqs_text,
+        color=EMBED_COLORS["info"],
+        timestamp=datetime.now()
+    )
+    faq_embed.set_footer(text="NIMBROR WATCHER v6.5 • KNOWLEDGE BASE")
+    
+    await interaction.response.send_message(embed=faq_embed, ephemeral=False)
 
 @bot.tree.command(name="resync", description="[OWNER] Resync application commands")
 async def resync(interaction: discord.Interaction):
@@ -3682,7 +3950,8 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
 
                 # Optional target for pings
                 target = None
-                guild = channel.guild if hasattr(channel, "guild") else None
+                ch = bot.active_chaos_channel
+                guild = ch.guild if hasattr(ch, "guild") else None
                 if guild:
                     candidates = [m for m in guild.members if not m.bot]
                     if candidates and random.random() < 0.55:
@@ -3718,7 +3987,7 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                     content = f"{target.mention} {content}"
 
                 try:
-                    await channel.send(content, allowed_mentions=allowed)
+                    await ch.send(content, allowed_mentions=allowed)
                     bot.active_chaos_count += 1
                 except discord.HTTPException as e:
                     if e.status == 429:
