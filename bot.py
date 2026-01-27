@@ -3042,7 +3042,7 @@ class NASControlPanel(discord.ui.View):
         
         # Send announcement
         if ANNOUNCEMENT_CHANNEL_ID:
-            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            ann_ch = await safe_get_channel(ANNOUNCEMENT_CHANNEL_ID)
             if ann_ch:
                 embed = discord.Embed(
                     title="🚨 NIMBROR ALERT LEVEL ESCALATED",
@@ -3124,7 +3124,7 @@ class NASControlPanel(discord.ui.View):
         
         # Send announcement
         if ANNOUNCEMENT_CHANNEL_ID:
-            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            ann_ch = await safe_get_channel(ANNOUNCEMENT_CHANNEL_ID)
             if ann_ch:
                 embed = discord.Embed(
                     title="⚠️ NIMBROR ALERT LEVEL ESCALATED",
@@ -3167,7 +3167,7 @@ class NASControlPanel(discord.ui.View):
         
         # Send announcement
         if ANNOUNCEMENT_CHANNEL_ID:
-            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            ann_ch = await safe_get_channel(ANNOUNCEMENT_CHANNEL_ID)
             if ann_ch:
                 embed = discord.Embed(
                     title="✅ NIMBROR ALERT LEVEL DE-ESCALATED",
@@ -3207,7 +3207,7 @@ class NASControlPanel(discord.ui.View):
         
         # Send announcement
         if ANNOUNCEMENT_CHANNEL_ID:
-            ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+            ann_ch = await safe_get_channel(ANNOUNCEMENT_CHANNEL_ID)
             if ann_ch:
                 embed = discord.Embed(
                     title="✨ NIMBROR SYSTEMS RESTORED",
@@ -3259,7 +3259,7 @@ async def alertlevel(interaction: discord.Interaction, level: int):
     
     # Send announcement
     if ANNOUNCEMENT_CHANNEL_ID:
-        ann_ch = bot.get_channel(ANNOUNCEMENT_CHANNEL_ID)
+        ann_ch = await safe_get_channel(ANNOUNCEMENT_CHANNEL_ID)
         if ann_ch:
             level_info = NAS_LEVELS[level]
             embed = discord.Embed(
@@ -3277,7 +3277,7 @@ async def alertlevel(interaction: discord.Interaction, level: int):
     
     # Send control panel to staff
     if STAFF_CHANNEL_ID:
-        staff_ch = bot.get_channel(STAFF_CHANNEL_ID)
+        staff_ch = await safe_get_channel(STAFF_CHANNEL_ID)
         if staff_ch:
             control_embed = discord.Embed(
                 title="📋 NAS CONTROL PANEL",
