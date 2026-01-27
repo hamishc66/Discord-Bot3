@@ -83,7 +83,7 @@ NAS_LEVELS = {
 NAS_EXCEPTION_CHANNEL = 1368217894881726586
 
 # Permission storage for restoration
-ORIGINAL_PERMISSIONS = {}  # {channel_id: {role_id: permissions_dict}}
+ORIGINAL_PERMISSIONS = {}  # {channel_id: {role_id: permissions_dict}}ad
 
 # AI Cooldown tracking - REPLACED WITH ADAPTIVE COOLDOWN SYSTEM (see below)
 AI_COOLDOWN = {}  # Legacy - kept for backward compatibility
@@ -504,6 +504,12 @@ class MyBot(discord.Client):
         self.active_ad_task = None
         self.active_ad_count = 0
         self.active_ad_channel = None
+
+        # CHAOS SYSTEM: Track chaos broadcast (admin-confirmed)
+        self.active_chaos_task = None
+        self.active_chaos_channel = None
+        self.active_chaos_count = 0
+        self.last_chaos_ai = 0
 
     async def setup_hook(self):
         try:
@@ -2151,6 +2157,11 @@ GOOGLE_ADS = [
     "🌐 Google Search Appliance: Enterprise search we control.",
 ]
 
+# 1,000 pre-generated chaos messages (lightweight templates for spam mode)
+CHAOS_PREGEN_MESSAGES = [
+    f"CHAOS BROADCAST #{i:04d}: SIGNAL JAMMING — CHANNEL BREACH DETECTED." for i in range(1, 1001)
+]
+
 async def score_interview_answer(question: str, answer: str) -> int:
     """Use the concise AI to score an answer (0/1). Falls back to heuristics on failure."""
     prompt = (
@@ -2986,6 +2997,50 @@ async def restart(interaction: discord.Interaction):
     final_embed.set_footer(text="NIMBROR WATCHER v6.5 • SYSTEMS OPERATIONAL")
     await msg.edit(embed=final_embed)
 
+
+@bot.tree.command(name="shutdown", description="[OWNER] Emergency shutdown (requires manual restart)")
+async def emergency_shutdown(interaction: discord.Interaction):
+    """Immediately terminate the bot process. Only owner can run this. Requires Koyeb/manual restart."""
+    OWNER_ID = 765028951541940225
+
+    if interaction.user.id != OWNER_ID:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Owner only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        embed=create_embed(
+            "⛔ Emergency Shutdown",
+            "Terminating bot process now. Manual restart from Koyeb required.",
+            color=EMBED_COLORS["error"]
+        ),
+        ephemeral=True
+    )
+
+    # Notify staff channel if available
+    try:
+        if STAFF_CHANNEL_ID:
+            staff_ch = await safe_get_channel(STAFF_CHANNEL_ID)
+            if staff_ch:
+                await staff_ch.send(
+                    embed=discord.Embed(
+                        title="⛔ EMERGENCY SHUTDOWN TRIGGERED",
+                        description=f"Issued by {interaction.user.mention}. Bot process exiting immediately.",
+                        color=0xff0000,
+                        timestamp=datetime.now()
+                    )
+                )
+    except Exception as e:
+        await log_error(f"shutdown notify: {e}")
+
+    # Terminate bot and process
+    try:
+        await bot.close()
+    finally:
+        os._exit(0)
+
 # --- NIMBROR ALERT SYSTEM (NAS) BUTTON VIEW ---
 
 class NASControlPanel(discord.ui.View):
@@ -3434,10 +3489,11 @@ async def stop(interaction: discord.Interaction):
     # Check if spam or ad is active
     spam_active = bot.active_spam_task and not bot.active_spam_task.done()
     ad_active = bot.active_ad_task and not bot.active_ad_task.done()
+    chaos_active = bot.active_chaos_task and not bot.active_chaos_task.done()
     
-    if not spam_active and not ad_active:
+    if not spam_active and not ad_active and not chaos_active:
         await interaction.response.send_message(
-            embed=create_embed("ℹ️ Nothing Running", "No spam or ads are currently running.", color=EMBED_COLORS["info"]),
+            embed=create_embed("ℹ️ Nothing Running", "No spam, ads, or chaos are currently running.", color=EMBED_COLORS["info"]),
             ephemeral=True
         )
         return
@@ -3454,6 +3510,11 @@ async def stop(interaction: discord.Interaction):
         bot.active_ad_task.cancel()
         count = bot.active_ad_count
         status_msgs.append(f"🛑 Ads: Cancelled ad campaign ({count} ads shown)")
+
+    if chaos_active:
+        bot.active_chaos_task.cancel()
+        count = bot.active_chaos_count
+        status_msgs.append(f"🛑 Chaos: Cancelled chaos broadcast ({count} messages)")
     
     await interaction.response.send_message(
         embed=create_embed(
@@ -3548,6 +3609,171 @@ async def ad_campaign(interaction: discord.Interaction):
     
     # Create and store task
     bot.active_ad_task = asyncio.create_task(ad_loop())
+
+
+# --- CHAOS MODE (ADMIN CONFIRMATION REQUIRED) ---
+
+class ChaosConfirmView(discord.ui.View):
+    """Confirmation prompt for chaos mode with explicit warning."""
+    def __init__(self, channel: discord.abc.Messageable, initiator_id: int):
+        super().__init__(timeout=60)
+        self.channel = channel
+        self.initiator_id = initiator_id
+
+    async def _ensure_initiator(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.initiator_id:
+            await interaction.response.send_message("❌ Only the requester can choose.", ephemeral=True)
+            return False
+        return True
+
+    def disable_all(self):
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label="YES - UNLEASH CHAOS", style=discord.ButtonStyle.danger, emoji="💥")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_initiator(interaction):
+            return
+        self.disable_all()
+        await interaction.response.edit_message(view=self)
+        await start_chaos_broadcast(self.channel, interaction.user)
+        await interaction.followup.send(
+            embed=create_embed(
+                "💥 Chaos Mode Activated",
+                "Spamming ads, AI blurts, pings, and 1,000 pre-gen messages. Use `/stop` to cancel.",
+                color=EMBED_COLORS["warning"]
+            ),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="NO - ABORT", style=discord.ButtonStyle.secondary, emoji="🛑")
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._ensure_initiator(interaction):
+            return
+        self.disable_all()
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(
+            embed=create_embed("✅ Aborted", "Chaos mode cancelled.", color=EMBED_COLORS["success"]),
+            ephemeral=True
+        )
+
+
+async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: discord.abc.User) -> None:
+    """Start the chaos broadcast task if not already running."""
+    if bot.active_chaos_task and not bot.active_chaos_task.done():
+        return
+
+    bot.active_chaos_channel = channel
+    bot.active_chaos_count = 0
+    bot.last_chaos_ai = 0
+
+    async def chaos_loop():
+        try:
+            while True:
+                await asyncio.sleep(random.uniform(2, 5))
+
+                # Back off if Discord rate-limited
+                if check_discord_rate_limit():
+                    await asyncio.sleep(15)
+                    continue
+
+                content = None
+                allowed = discord.AllowedMentions(everyone=True, users=[], roles=False)
+
+                # Optional target for pings
+                target = None
+                guild = channel.guild if hasattr(channel, "guild") else None
+                if guild:
+                    candidates = [m for m in guild.members if not m.bot]
+                    if candidates and random.random() < 0.55:
+                        target = random.choice(candidates)
+                        allowed = discord.AllowedMentions(everyone=True, users=[target], roles=False)
+
+                roll = random.random()
+                now = time.time()
+
+                if roll < 0.35:
+                    content = random.choice(GOOGLE_ADS)
+                elif roll < 0.7:
+                    content = random.choice(CHAOS_PREGEN_MESSAGES)
+                else:
+                    if now - bot.last_chaos_ai >= 15:
+                        try:
+                            ai_line = await run_huggingface_concise(
+                                "You are the Watcher. Emit one short alarming broadcast line. Keep it under 15 words."
+                            )
+                            if ai_line:
+                                content = f"🤖 {ai_line.strip()}"
+                                bot.last_chaos_ai = now
+                        except Exception as e:
+                            await log_error(f"chaos ai: {e}")
+                    if not content:
+                        content = random.choice(CHAOS_PREGEN_MESSAGES)
+
+                # Mentions
+                if random.random() < 0.2:
+                    content = f"@everyone {content}"
+                    allowed = discord.AllowedMentions(everyone=True, users=[target] if target else [], roles=False)
+                elif target:
+                    content = f"{target.mention} {content}"
+
+                try:
+                    await channel.send(content, allowed_mentions=allowed)
+                    bot.active_chaos_count += 1
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        set_discord_rate_limited(True)
+                        await asyncio.sleep(30)
+                    else:
+                        await log_error(f"chaos send: {e}")
+                except Exception as e:
+                    await log_error(f"chaos send: {e}")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            await log_error(f"chaos loop: {e}")
+        finally:
+            bot.active_chaos_task = None
+            bot.active_chaos_channel = None
+            bot.active_chaos_count = 0
+            bot.last_chaos_ai = 0
+
+    bot.active_chaos_task = asyncio.create_task(chaos_loop())
+
+
+@bot.tree.command(name="chaos", description="[ADMIN] Unleash chaos spam (ads, AI blurts, pings)")
+async def chaos(interaction: discord.Interaction):
+    # Admin check
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Administrator only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+
+    # Already running?
+    if bot.active_chaos_task and not bot.active_chaos_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("⚠️ Chaos Running", "Chaos mode is already active. Use `/stop` to cancel.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+
+    warning = discord.Embed(
+        title="⚠️ EXTREME WARNING: CHAOS MODE",
+        description=(
+            "This will spam ads, AI messages, 1,000 pre-gen lines, @everyone, and random pings.\n"
+            "It may trigger rate limits and require a manual restart.\n\n"
+            "Proceed only if you are prepared to run `/stop` or restart the service on Koyeb."
+        ),
+        color=EMBED_COLORS["error"],
+        timestamp=datetime.now()
+    )
+    warning.set_footer(text="NIMBROR WATCHER • CHAOS PROTOCOL")
+
+    view = ChaosConfirmView(interaction.channel, interaction.user.id)
+    await interaction.response.send_message(embed=warning, view=view, ephemeral=True)
 
 @bot.tree.command(name="interview", description="Force an interview on a selected user")
 async def force_interview(interaction: discord.Interaction, user: discord.User):
