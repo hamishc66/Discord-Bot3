@@ -6211,16 +6211,36 @@ async def on_message(message):
 
 # --- RUN ---
 print("🚀 Starting Discord bot...")
+
+# Add startup delay to avoid hitting rate limits on rapid restarts
+import time
+startup_delay = 5
+print(f"⏳ Waiting {startup_delay}s before connecting (rate limit safety)...")
+time.sleep(startup_delay)
+
 try:
-    bot.run(TOKEN, reconnect=True)  # Keep reconnect=True for normal operation, but add guard below
+    bot.run(TOKEN, reconnect=True)
+except discord.HTTPException as e:
+    if e.status == 429:
+        print(f"❌ Discord rate limit (HTTP 429): {e}")
+        print("⏰ You've exceeded Discord's global rate limits.")
+        print("   Wait 10-30 minutes before restarting.")
+        print("💤 Bot entering idle sleep (will not retry - process will remain running)")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("\n🛑 Shutdown via keyboard interrupt")
+    else:
+        print(f"❌ Discord HTTP error: {e}")
+        raise
 except discord.LoginFailure as e:
-    print(f"❌ Discord login failed (HTTP 429 or invalid token): {e}")
+    print(f"❌ Discord login failed (invalid token or rate limited): {e}")
     print("💤 Bot entering idle sleep (will not retry login - process will remain running)")
     print("   If this is a rate limit, wait 8-24 hours before restarting.")
     try:
-        import time
         while True:
-            time.sleep(3600)  # Sleep 1 hour at a time
+            time.sleep(3600)
     except KeyboardInterrupt:
         print("\n🛑 Shutdown via keyboard interrupt")
 except KeyboardInterrupt:
@@ -6230,8 +6250,7 @@ except Exception as e:
     traceback.print_exc()
     print("💤 Bot entering idle sleep (will not retry - process will remain running)")
     try:
-        import time
         while True:
-            time.sleep(3600)  # Sleep 1 hour at a time
+            time.sleep(3600)
     except KeyboardInterrupt:
         print("\n🛑 Shutdown via keyboard interrupt")
