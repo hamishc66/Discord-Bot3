@@ -88,6 +88,10 @@ ERROR_LOG_COOLDOWN_DURATION = 5
 
 # RATE LIMIT SAFETY: Global command cooldown (per user, 3s minimum between ANY command)
 GLOBAL_COMMAND_COOLDOWN = {}
+
+# GLOBAL AI COOLDOWN: 8-second minimum between ANY AI calls (prevents rate limits)
+GLOBAL_AI_COOLDOWN = 8
+LAST_AI_CALL = 0
 GLOBAL_COMMAND_COOLDOWN_DURATION = 3
 
 # Track whether app commands have been synced to Discord (prevents double-sync on reconnects)
@@ -354,44 +358,102 @@ LORE_CONTEXT = (
 
 async def run_huggingface(prompt: str) -> str:
     """Call OpenRouter API with corrupting mode Easter egg (5% chance for eerie responses). RATE LIMITED via semaphore."""
+    global LAST_AI_CALL
+    
     # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
     async with AI_SEMAPHORE:
-        try:
-            loop = asyncio.get_running_loop()
-            def call():
-                url = "https://openrouter.ai/api/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+        # === GLOBAL AI COOLDOWN (8 seconds) ===
+        now = time.time()
+        cooldown_remaining = GLOBAL_AI_COOLDOWN - (now - LAST_AI_CALL)
+        if cooldown_remaining > 0:
+            await asyncio.sleep(cooldown_remaining)
+        
+        LAST_AI_CALL = time.time()
+        
+        # === MAKE REQUEST WITH 429 HANDLING ===
+        for attempt in range(2):  # Max 1 retry (2 total attempts)
+            try:
+                loop = asyncio.get_running_loop()
+                def call():
+                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                    
+                    # Randomly add corrupting mode trigger (5% chance for eerie responses)
+                    corrupting_trigger = ""
+                    if random.random() < 0.05:
+                        corrupting_trigger = " (Respond with slight strangeness and eeriness as if your signals are corrupted)"
+                    
+                    payload = {
+                        "model": AI_MODEL,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are the Nimbror Watcher AI. Use the provided lore. "
+                                    "Respond in one paragraph, maximum 4 short sentences. "
+                                    "Be unsettling, cryptic, and slightly threatening. "
+                                    "No markdown beyond what the user supplies." + corrupting_trigger
+                                )
+                            },
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.7,
+                        "max_tokens": 300
+                    }
+                    response = requests.post(url, headers=headers, json=payload, timeout=60)
+                    
+                    # === 429 HANDLING ===
+                    if response.status_code == 429:
+                        raise requests.exceptions.HTTPError("429 Rate Limit", response=response)
+                    
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    # === JSON VALIDATION: Never assume "choices" exists ===
+                    if "choices" not in data or not data["choices"]:
+                        print(f"⚠️ AI response missing 'choices': {data}")
+                        return None
+                    
+                    return data["choices"][0]["message"]["content"].strip()
                 
-                # Randomly add corrupting mode trigger (5% chance for eerie responses)
-                corrupting_trigger = ""
-                if random.random() < 0.05:
-                    corrupting_trigger = " (Respond with slight strangeness and eeriness as if your signals are corrupted)"
+                result = await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
                 
-                payload = {
-                    "model": AI_MODEL,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are the Nimbror Watcher AI. Use the provided lore. "
-                                "Respond in one paragraph, maximum 4 short sentences. "
-                                "Be unsettling, cryptic, and slightly threatening. "
-                                "No markdown beyond what the user supplies." + corrupting_trigger
-                            )
-                        },
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 300
-                }
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
-            return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
-        except Exception as e:
-            print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
-            return "🛰️ *[SIGNAL LOST]*"
+                # If result is None (invalid JSON), treat as failure
+                if result is None:
+                    if attempt == 0:
+                        print("⚠️ Invalid AI response, retrying once...")
+                        await asyncio.sleep(25)
+                        continue
+                    else:
+                        return "🛰️ *[SIGNAL LOST]*"
+                
+                return result
+            
+            except requests.exceptions.HTTPError as e:
+                if "429" in str(e):
+                    print(f"⚠️ OpenRouter 429 rate limit (attempt {attempt + 1}/2)")
+                    if attempt == 0:
+                        await asyncio.sleep(25)
+                        continue
+                    else:
+                        return "🛰️ *[SIGNAL LOST — RATE LIMITED]*"
+                else:
+                    print(f"❌ AI HTTP error: {type(e).__name__}: {str(e)[:150]}")
+                    return "🛰️ *[SIGNAL LOST]*"
+            
+            except asyncio.TimeoutError:
+                print(f"⚠️ AI timeout (attempt {attempt + 1}/2)")
+                if attempt == 0:
+                    await asyncio.sleep(5)
+                    continue
+                else:
+                    return "🛰️ *[SIGNAL LOST — TIMEOUT]*"
+            
+            except Exception as e:
+                print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+                return "🛰️ *[SIGNAL LOST]*"
+        
+        return "🛰️ *[SIGNAL LOST]*"
 
 # --- DISCORD BOT ---
 class MyBot(discord.Client):
@@ -2383,39 +2445,97 @@ def clamp_response(text: str, max_chars: int = 500) -> str:
 # --- CONCISE AI MODE ---
 async def run_huggingface_concise(prompt: str) -> str:
     """Call OpenRouter API with strict constraints for ping replies. RATE LIMITED via semaphore."""
+    global LAST_AI_CALL
+    
     # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
     async with AI_SEMAPHORE:
-        try:
-            loop = asyncio.get_running_loop()
-            def call():
-                url = "https://openrouter.ai/api/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+        # === GLOBAL AI COOLDOWN (8 seconds) ===
+        now = time.time()
+        cooldown_remaining = GLOBAL_AI_COOLDOWN - (now - LAST_AI_CALL)
+        if cooldown_remaining > 0:
+            await asyncio.sleep(cooldown_remaining)
+        
+        LAST_AI_CALL = time.time()
+        
+        # === MAKE REQUEST WITH 429 HANDLING ===
+        for attempt in range(2):  # Max 1 retry (2 total attempts)
+            try:
+                loop = asyncio.get_running_loop()
+                def call():
+                    url = "https://openrouter.ai/api/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                    
+                    payload = {
+                        "model": AI_MODEL,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are the Nimbror Watcher. Be unsettling, cryptic, and slightly threatening. "
+                                    "No friendliness. Speak like a paranoid surveillance AI. "
+                                    "Plain text only—no markdown, no emojis, no lists. "
+                                    "Keep it tight: 1-4 short sentences max."
+                                )
+                            },
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": 0.7,
+                        "max_tokens": 120
+                    }
+                    response = requests.post(url, headers=headers, json=payload, timeout=60)
+                    
+                    # === 429 HANDLING ===
+                    if response.status_code == 429:
+                        raise requests.exceptions.HTTPError("429 Rate Limit", response=response)
+                    
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    # === JSON VALIDATION: Never assume "choices" exists ===
+                    if "choices" not in data or not data["choices"]:
+                        print(f"⚠️ AI response missing 'choices': {data}")
+                        return None
+                    
+                    return data["choices"][0]["message"]["content"].strip()
                 
-                payload = {
-                    "model": AI_MODEL,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are the Nimbror Watcher. Be unsettling, cryptic, and slightly threatening. "
-                                "No friendliness. Speak like a paranoid surveillance AI. "
-                                "Plain text only—no markdown, no emojis, no lists. "
-                                "Keep it tight: 1-4 short sentences max."
-                            )
-                        },
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 120
-                }
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
-            return await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
-        except Exception as e:
-            print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
-            return "[SIGNAL LOST]"
+                result = await asyncio.wait_for(loop.run_in_executor(None, call), timeout=60)
+                
+                # If result is None (invalid JSON), treat as failure
+                if result is None:
+                    if attempt == 0:
+                        print("⚠️ Invalid AI response, retrying once...")
+                        await asyncio.sleep(25)
+                        continue
+                    else:
+                        return "[SIGNAL LOST]"
+                
+                return result
+            
+            except requests.exceptions.HTTPError as e:
+                if "429" in str(e):
+                    print(f"⚠️ OpenRouter 429 rate limit (attempt {attempt + 1}/2)")
+                    if attempt == 0:
+                        await asyncio.sleep(25)
+                        continue
+                    else:
+                        return "[SIGNAL LOST — RATE LIMITED]"
+                else:
+                    print(f"❌ AI HTTP error: {type(e).__name__}: {str(e)[:150]}")
+                    return "[SIGNAL LOST]"
+            
+            except asyncio.TimeoutError:
+                print(f"⚠️ AI timeout (attempt {attempt + 1}/2)")
+                if attempt == 0:
+                    await asyncio.sleep(5)
+                    continue
+                else:
+                    return "[SIGNAL LOST — TIMEOUT]"
+            
+            except Exception as e:
+                print(f"❌ AI error: {type(e).__name__}: {str(e)[:150]}")
+                return "[SIGNAL LOST]"
+        
+        return "[SIGNAL LOST]"
 
 # --- COMMANDS ---
 @bot.tree.command(name="help", description="List all Watcher commands")
@@ -4930,6 +5050,12 @@ async def on_message(message):
 
         # --- AI on mention ---
         if bot.user and bot.user.mentioned_in(message):
+            # === SPAM/AD SAFETY: Do NOT trigger AI for bot's own spam/ad campaigns ===
+            if bot.active_spam_task and not bot.active_spam_task.done():
+                return  # Skip AI during active spam
+            if bot.active_ad_task and not bot.active_ad_task.done():
+                return  # Skip AI during active ads
+            
             cleanup_expired_cooldowns()  # Periodic cleanup
             
             user_id = message.author.id
