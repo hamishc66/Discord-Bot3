@@ -381,7 +381,7 @@ LORE_CONTEXT = (
 )
 
 async def run_huggingface(prompt: str) -> str:
-    """Call OpenRouter API with corrupting mode Easter egg (5% chance for eerie responses). RATE LIMITED via semaphore."""
+    """Call Groq API with corrupting mode Easter egg (5% chance for eerie responses). RATE LIMITED via semaphore."""
     global LAST_AI_CALL
     
     # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
@@ -399,8 +399,8 @@ async def run_huggingface(prompt: str) -> str:
             try:
                 loop = asyncio.get_running_loop()
                 def call():
-                    url = "https://openrouter.ai/api/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
                     
                     # Randomly add corrupting mode trigger (5% chance for eerie responses)
                     corrupting_trigger = ""
@@ -408,7 +408,7 @@ async def run_huggingface(prompt: str) -> str:
                         corrupting_trigger = " (Respond with slight strangeness and eeriness as if your signals are corrupted)"
                     
                     payload = {
-                        "model": AI_MODEL,
+                        "model": "mixtral-8x7b-32768",  # Groq's fast model
                         "messages": [
                             {
                                 "role": "system",
@@ -864,7 +864,10 @@ class MyBot(discord.Client):
                                     await channel.send(embed=embed)
                             else:
                                 result = clamp_response(result, max_chars=500)
-                                if target_message:
+                                # Don't send if AI failed (signal lost)
+                                if "SIGNAL LOST" in result:
+                                    print(f"⚠️ Skipping failed AI response for user {user_id}")
+                                elif target_message:
                                     await target_message.edit(content=result[:2000], embed=None, allowed_mentions=discord.AllowedMentions.none())
                                 else:
                                     await channel.send(result[:2000], allowed_mentions=discord.AllowedMentions.none())
@@ -2855,7 +2858,7 @@ def clamp_response(text: str, max_chars: int = 500) -> str:
 
 # --- CONCISE AI MODE ---
 async def run_huggingface_concise(prompt: str) -> str:
-    """Call OpenRouter API with strict constraints for ping replies. RATE LIMITED via semaphore."""
+    """Call Groq API with strict constraints for ping replies. RATE LIMITED via semaphore."""
     global LAST_AI_CALL
     
     # RATE LIMIT SAFETY: Use global semaphore to limit concurrent AI calls
@@ -2873,11 +2876,11 @@ async def run_huggingface_concise(prompt: str) -> str:
             try:
                 loop = asyncio.get_running_loop()
                 def call():
-                    url = "https://openrouter.ai/api/v1/chat/completions"
-                    headers = {"Authorization": f"Bearer {AI_API_KEY}"}
+                    url = "https://api.groq.com/openai/v1/chat/completions"
+                    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
                     
                     payload = {
-                        "model": AI_MODEL,
+                        "model": "mixtral-8x7b-32768",  # Groq's fast model
                         "messages": [
                             {
                                 "role": "system",
@@ -3940,7 +3943,7 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
     async def chaos_loop():
         try:
             while True:
-                await asyncio.sleep(random.uniform(2, 5))
+                await asyncio.sleep(random.uniform(0.5, 1.5))
 
                 # Back off if Discord rate-limited
                 if check_discord_rate_limit():
