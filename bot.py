@@ -510,6 +510,8 @@ class MyBot(discord.Client):
         self.active_chaos_channel = None
         self.active_chaos_count = 0
         self.last_chaos_ai = 0
+        self.chaos_optout = set()  # Users who opted out of chaos pings (reset each session)
+        self.chaos_notified = set()  # Users already notified about /optout (reset each session)
 
     async def setup_hook(self):
         try:
@@ -3949,21 +3951,14 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                 # Default: no @everyone, only user mentions allowed
                 allowed = discord.AllowedMentions(everyone=False, users=[], roles=False)
 
-                # Optional target for pings
+                # Random user ping (excluding bots and opted-out users)
                 target = None
                 ch = bot.active_chaos_channel
                 guild = ch.guild if hasattr(ch, "guild") else None
                 
-                # Check bot permissions
-                can_mention_everyone = False
-                if guild and hasattr(ch, "permissions_for"):
-                    bot_member = guild.get_member(bot.user.id)
-                    if bot_member:
-                        perms = ch.permissions_for(bot_member)
-                        can_mention_everyone = perms.mention_everyone
-                
                 if guild:
-                    candidates = [m for m in guild.members if not m.bot]
+                    # Get all non-bot members who haven't opted out
+                    candidates = [m for m in guild.members if not m.bot and m.id not in bot.chaos_optout]
                     if candidates and random.random() < 0.55:
                         target = random.choice(candidates)
                         allowed = discord.AllowedMentions(everyone=False, users=[target], roles=False)
@@ -3989,11 +3984,8 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                     if not content:
                         content = random.choice(CHAOS_PREGEN_MESSAGES)
 
-                # Only add @everyone if bot has permission
-                if random.random() < 0.2 and can_mention_everyone:
-                    content = f"@everyone {content}"
-                    allowed = discord.AllowedMentions(everyone=True, users=[target] if target else [], roles=False)
-                elif target:
+                # Add user mention if target was selected
+                if target:
                     content = f"{target.mention} {content}"
 
                 try:
@@ -4022,6 +4014,8 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
             bot.active_chaos_channel = None
             bot.active_chaos_count = 0
             bot.last_chaos_ai = 0
+            bot.chaos_optout.clear()  # Clear optout list when chaos ends
+            bot.chaos_notified.clear()  # Clear notification tracking
 
     bot.active_chaos_task = asyncio.create_task(chaos_loop())
 
@@ -4036,28 +4030,26 @@ async def chaos(interaction: discord.Interaction):
         )
         return
 
-    # Permission check - verify bot can send messages and mention
+    # Permission check - verify bot can send messages
     channel = interaction.channel
     if hasattr(channel, 'permissions_for'):
         bot_member = interaction.guild.me
         perms = channel.permissions_for(bot_member)
         
-        missing_perms = []
         if not perms.send_messages:
-            missing_perms.append("Send Messages")
-        if not perms.mention_everyone:
-            missing_perms.append("Mention @everyone")
-        
-        if missing_perms:
             await interaction.response.send_message(
                 embed=create_embed(
                     "❌ Missing Permissions", 
-                    f"Bot lacks required permissions: {', '.join(missing_perms)}\n\nChaos mode requires these permissions to function.",
+                    "Bot lacks 'Send Messages' permission in this channel.",
                     color=EMBED_COLORS["error"]
                 ),
                 ephemeral=True
             )
             return
+    
+    # Reset optout and notification tracking for new chaos session
+    bot.chaos_optout.clear()
+    bot.chaos_notified.clear()
 
     # Already running?
     if bot.active_chaos_task and not bot.active_chaos_task.done():
@@ -4081,6 +4073,38 @@ async def chaos(interaction: discord.Interaction):
 
     view = ChaosConfirmView(interaction.channel, interaction.user.id)
     await interaction.response.send_message(embed=warning, view=view, ephemeral=True)
+
+@bot.tree.command(name="optout", description="Stop getting pinged during active chaos mode (this session only)")
+async def optout(interaction: discord.Interaction):
+    """Opt out of chaos pings for the current session."""
+    user_id = interaction.user.id
+    
+    # Check if chaos is active
+    if not bot.active_chaos_task or bot.active_chaos_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("ℹ️ No Active Chaos", "Chaos mode is not currently running.", color=EMBED_COLORS["info"]),
+            ephemeral=True
+        )
+        return
+    
+    # Check if already opted out
+    if user_id in bot.chaos_optout:
+        await interaction.response.send_message(
+            embed=create_embed("✅ Already Opted Out", "You're already opted out of chaos pings.", color=EMBED_COLORS["success"]),
+            ephemeral=True
+        )
+        return
+    
+    # Add to optout set
+    bot.chaos_optout.add(user_id)
+    await interaction.response.send_message(
+        embed=create_embed(
+            "✅ Opted Out", 
+            "You will no longer be pinged during this chaos session.\n\n*This resets when chaos stops.*",
+            color=EMBED_COLORS["success"]
+        ),
+        ephemeral=True
+    )
 
 @bot.tree.command(name="interview", description="Force an interview on a selected user")
 async def force_interview(interaction: discord.Interaction, user: discord.User):
@@ -5711,6 +5735,27 @@ async def on_message(message):
         return
     
     uid = str(message.author.id)
+    user_id = message.author.id
+    
+    # === CHAOS OPTOUT NOTIFICATION ===
+    # If chaos is active and user hasn't been notified, tell them about /optout
+    if bot.active_chaos_task and not bot.active_chaos_task.done():
+        if user_id not in bot.chaos_notified and user_id not in bot.chaos_optout:
+            bot.chaos_notified.add(user_id)
+            optout_msg = discord.Embed(
+                title="🌀 Chaos Mode Active",
+                description="The Watcher has unleashed chaos. Use `/optout` to stop being pinged.",
+                color=EMBED_COLORS["warning"]
+            )
+            try:
+                # Try to DM first
+                await message.author.send(embed=optout_msg)
+            except (discord.Forbidden, discord.HTTPException):
+                # If DM fails, send in channel
+                try:
+                    await message.channel.send(f"{message.author.mention}", embed=optout_msg, delete_after=15)
+                except Exception as e:
+                    print(f"⚠️ Chaos notify error: {e}")
     
     # === AD CAMPAIGN PING RESPONSE ===
     if bot.active_ad_task and not bot.active_ad_task.done():
