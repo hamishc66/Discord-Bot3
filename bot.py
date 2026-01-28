@@ -3946,17 +3946,27 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                     continue
 
                 content = None
-                allowed = discord.AllowedMentions(everyone=True, users=[], roles=False)
+                # Default: no @everyone, only user mentions allowed
+                allowed = discord.AllowedMentions(everyone=False, users=[], roles=False)
 
                 # Optional target for pings
                 target = None
                 ch = bot.active_chaos_channel
                 guild = ch.guild if hasattr(ch, "guild") else None
+                
+                # Check bot permissions
+                can_mention_everyone = False
+                if guild and hasattr(ch, "permissions_for"):
+                    bot_member = guild.get_member(bot.user.id)
+                    if bot_member:
+                        perms = ch.permissions_for(bot_member)
+                        can_mention_everyone = perms.mention_everyone
+                
                 if guild:
                     candidates = [m for m in guild.members if not m.bot]
                     if candidates and random.random() < 0.55:
                         target = random.choice(candidates)
-                        allowed = discord.AllowedMentions(everyone=True, users=[target], roles=False)
+                        allowed = discord.AllowedMentions(everyone=False, users=[target], roles=False)
 
                 roll = random.random()
                 now = time.time()
@@ -3979,8 +3989,8 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                     if not content:
                         content = random.choice(CHAOS_PREGEN_MESSAGES)
 
-                # Mentions
-                if random.random() < 0.2:
+                # Only add @everyone if bot has permission
+                if random.random() < 0.2 and can_mention_everyone:
                     content = f"@everyone {content}"
                     allowed = discord.AllowedMentions(everyone=True, users=[target] if target else [], roles=False)
                 elif target:
@@ -3989,14 +3999,19 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
                 try:
                     await ch.send(content, allowed_mentions=allowed)
                     bot.active_chaos_count += 1
+                except discord.Forbidden as e:
+                    await log_error(f"chaos permission denied: {e}")
+                    await asyncio.sleep(5)
                 except discord.HTTPException as e:
                     if e.status == 429:
                         set_discord_rate_limited(True)
                         await asyncio.sleep(30)
                     else:
-                        await log_error(f"chaos send: {e}")
+                        await log_error(f"chaos http error: {e}")
+                        await asyncio.sleep(3)
                 except Exception as e:
                     await log_error(f"chaos send: {e}")
+                    await asyncio.sleep(3)
 
         except asyncio.CancelledError:
             pass
@@ -4020,6 +4035,29 @@ async def chaos(interaction: discord.Interaction):
             ephemeral=True
         )
         return
+
+    # Permission check - verify bot can send messages and mention
+    channel = interaction.channel
+    if hasattr(channel, 'permissions_for'):
+        bot_member = interaction.guild.me
+        perms = channel.permissions_for(bot_member)
+        
+        missing_perms = []
+        if not perms.send_messages:
+            missing_perms.append("Send Messages")
+        if not perms.mention_everyone:
+            missing_perms.append("Mention @everyone")
+        
+        if missing_perms:
+            await interaction.response.send_message(
+                embed=create_embed(
+                    "❌ Missing Permissions", 
+                    f"Bot lacks required permissions: {', '.join(missing_perms)}\n\nChaos mode requires these permissions to function.",
+                    color=EMBED_COLORS["error"]
+                ),
+                ephemeral=True
+            )
+            return
 
     # Already running?
     if bot.active_chaos_task and not bot.active_chaos_task.done():
