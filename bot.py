@@ -512,6 +512,12 @@ class MyBot(discord.Client):
         self.last_chaos_ai = 0
         self.chaos_optout = set()  # Users who opted out of chaos pings (reset each session)
         self.chaos_notified = set()  # Users already notified about /optout (reset each session)
+        
+        # TARGET CHAOS SYSTEM: Single-user harassment
+        self.active_target_chaos_task = None
+        self.target_chaos_user = None
+        self.target_chaos_channel = None
+        self.target_chaos_count = 0
 
     async def setup_hook(self):
         try:
@@ -3763,10 +3769,11 @@ async def stop(interaction: discord.Interaction):
     spam_active = bot.active_spam_task and not bot.active_spam_task.done()
     ad_active = bot.active_ad_task and not bot.active_ad_task.done()
     chaos_active = bot.active_chaos_task and not bot.active_chaos_task.done()
+    target_chaos_active = bot.active_target_chaos_task and not bot.active_target_chaos_task.done()
     
-    if not spam_active and not ad_active and not chaos_active:
+    if not spam_active and not ad_active and not chaos_active and not target_chaos_active:
         await interaction.response.send_message(
-            embed=create_embed("ℹ️ Nothing Running", "No spam, ads, or chaos are currently running.", color=EMBED_COLORS["info"]),
+            embed=create_embed("ℹ️ Nothing Running", "No spam, ads, chaos, or target chaos are currently running.", color=EMBED_COLORS["info"]),
             ephemeral=True
         )
         return
@@ -3788,6 +3795,12 @@ async def stop(interaction: discord.Interaction):
         bot.active_chaos_task.cancel()
         count = bot.active_chaos_count
         status_msgs.append(f"🛑 Chaos: Cancelled chaos broadcast ({count} messages)")
+    
+    if target_chaos_active:
+        bot.active_target_chaos_task.cancel()
+        target = bot.target_chaos_user.mention if bot.target_chaos_user else "unknown"
+        count = bot.target_chaos_count
+        status_msgs.append(f"🛑 Target Chaos: Cancelled targeting {target} ({count} messages)")
     
     await interaction.response.send_message(
         embed=create_embed(
@@ -4023,6 +4036,87 @@ async def start_chaos_broadcast(channel: discord.abc.Messageable, initiator: dis
     bot.active_chaos_task = asyncio.create_task(chaos_loop())
 
 
+async def start_target_chaos_broadcast(channel: discord.TextChannel, target_user: discord.User, initiator: discord.abc.User) -> None:
+    """Start targeted chaos on a single user (DMs + channel mentions)."""
+    if bot.active_target_chaos_task and not bot.active_target_chaos_task.done():
+        return
+
+    bot.target_chaos_channel = channel
+    bot.target_chaos_user = target_user
+    bot.target_chaos_count = 0
+
+    async def target_chaos_loop():
+        try:
+            while True:
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                # Back off if Discord rate-limited
+                if check_discord_rate_limit():
+                    await asyncio.sleep(15)
+                    continue
+
+                content = None
+                roll = random.random()
+                now = time.time()
+
+                # Pick content type
+                if roll < 0.35:
+                    content = random.choice(GOOGLE_ADS)
+                elif roll < 0.7:
+                    content = random.choice(CHAOS_PREGEN_MESSAGES)
+                else:
+                    try:
+                        ai_line = await run_huggingface_concise(
+                            f"You are targeting {target_user.name}. Emit one short, personalized alarming message. Keep it under 15 words."
+                        )
+                        if ai_line and "SIGNAL LOST" not in ai_line:
+                            content = f"🤖 {ai_line.strip()}"
+                    except Exception as e:
+                        await log_error(f"target chaos ai: {e}")
+                
+                if not content:
+                    content = random.choice(CHAOS_PREGEN_MESSAGES)
+
+                # Send to channel with mention
+                channel_content = f"{target_user.mention} {content}"
+                try:
+                    await channel.send(channel_content, allowed_mentions=discord.AllowedMentions(everyone=False, users=[target_user], roles=False))
+                    bot.target_chaos_count += 1
+                except discord.Forbidden:
+                    await asyncio.sleep(5)
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        await asyncio.sleep(30)
+                    else:
+                        await log_error(f"target chaos http error: {e}")
+                        await asyncio.sleep(3)
+                except Exception as e:
+                    await log_error(f"target chaos send: {e}")
+                    await asyncio.sleep(3)
+
+                # Also try to DM the user
+                try:
+                    dm_content = content
+                    await target_user.send(dm_content)
+                except (discord.Forbidden, discord.HTTPException):
+                    # DMs might be disabled, that's ok
+                    pass
+                except Exception as e:
+                    pass  # Silently ignore DM errors
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            await log_error(f"target chaos loop: {e}")
+        finally:
+            bot.active_target_chaos_task = None
+            bot.target_chaos_user = None
+            bot.target_chaos_channel = None
+            bot.target_chaos_count = 0
+
+    bot.active_target_chaos_task = asyncio.create_task(target_chaos_loop())
+
+
 @bot.tree.command(name="chaos", description="[ADMIN] Unleash chaos spam (ads, AI blurts, pings)")
 async def chaos(interaction: discord.Interaction):
     # Admin check
@@ -4108,6 +4202,75 @@ async def optout(interaction: discord.Interaction):
         ),
         ephemeral=True
     )
+
+@bot.tree.command(name="target-chaos", description="[ADMIN] Unleash chaos spam on a single user (DMs + channel pings)")
+async def target_chaos(interaction: discord.Interaction, target_user: discord.User, channel: discord.TextChannel):
+    """Target a single user with chaos spam in DMs and channel mentions."""
+    # Admin check
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Access Denied", "Administrator only.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Can't target bots
+    if target_user.bot:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Invalid Target", "Cannot target bots.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Can't target self
+    if target_user.id == interaction.user.id:
+        await interaction.response.send_message(
+            embed=create_embed("❌ Invalid Target", "You cannot target yourself.", color=EMBED_COLORS["error"]),
+            ephemeral=True
+        )
+        return
+    
+    # Already running?
+    if bot.active_target_chaos_task and not bot.active_target_chaos_task.done():
+        await interaction.response.send_message(
+            embed=create_embed("⚠️ Target Chaos Running", f"Already targeting {bot.target_chaos_user.mention}. Use `/stop` to cancel.", color=EMBED_COLORS["warning"]),
+            ephemeral=True
+        )
+        return
+    
+    warning = discord.Embed(
+        title="⚠️ WARNING: TARGET CHAOS MODE",
+        description=(
+            f"This will spam {target_user.mention} with:\n"
+            f"• 1,000 pre-gen messages (DMs + channel)\n"
+            f"• Constant mentions in {channel.mention}\n"
+            f"• Random AI responses\n\n"
+            f"This is intense. Proceed?"
+        ),
+        color=EMBED_COLORS["error"],
+        timestamp=datetime.now()
+    )
+    warning.set_footer(text="NIMBROR WATCHER • TARGET PROTOCOL")
+    
+    class TargetChaosConfirmView(discord.ui.View):
+        def __init__(self, user, ch):
+            super().__init__(timeout=30)
+            self.user = user
+            self.ch = ch
+        
+        @discord.ui.button(label="YES, TARGET THEM", style=discord.ButtonStyle.red)
+        async def yes_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            await button_interaction.response.defer()
+            await start_target_chaos_broadcast(self.ch, self.user, button_interaction.user)
+            await button_interaction.followup.send("🌀 Target chaos initiated!", ephemeral=True)
+        
+        @discord.ui.button(label="NO, CANCEL", style=discord.ButtonStyle.gray)
+        async def no_button(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+            await button_interaction.response.defer()
+            await button_interaction.followup.send("Cancelled.", ephemeral=True)
+    
+    view = TargetChaosConfirmView(target_user, channel)
+    await interaction.response.send_message(embed=warning, view=view, ephemeral=True)
 
 @bot.tree.command(name="interview", description="Force an interview on a selected user")
 async def force_interview(interaction: discord.Interaction, user: discord.User):
