@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hamo — Field Studies</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Shared Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Custom cursor blob -->
+  <div id="cursor-blob"></div>
+
+  <!-- Animated SVG background grid -->
+  <svg id="bg-grid" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"
+       xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <pattern id="grid-pat" x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#F5F0E8" stroke-width="0.3"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid-pat)" />
+  </svg>
+
+  <!-- Page Content -->
+  <div id="page-content">
+
+    <h2 class="section-title">CURRENT STUDIES</h2>
+
+    <p style="margin-bottom:40px; opacity:0.55; font-family:var(--font-accent);">
+      In progress. Getting there.
+    </p>
+
+    <div class="academics-list" aria-label="Current courses">
+
+      <!-- Harvard Meteorology -->
+      <article class="academic-card reveal">
+        <h3>Meteorology</h3>
+        <p class="org">Harvard Online Extension School</p>
+        <div style="display:flex; align-items:center;">
+          <span class="pulsing-dot"></span>
+          <span style="font-family:var(--font-accent); font-size:0.8rem; opacity:0.7;">Active</span>
+        </div>
+        <div class="progress-bar-wrap" style="margin-top:14px;">
+          <div class="progress-bar-fill" style="width:60%;"></div>
+        </div>
+        <p class="progress-label">~60% through the material</p>
+      </article>
+
+      <!-- Toronto Geospatial -->
+      <article class="academic-card reveal" style="border-left-color: var(--cobalt-blue);">
+        <h3>Geospatial Analysis</h3>
+        <p class="org">University of Toronto — Coursera</p>
+        <div style="display:flex; align-items:center;">
+          <span class="pulsing-dot" style="background:var(--cobalt-blue);"></span>
+          <span style="font-family:var(--font-accent); font-size:0.8rem; opacity:0.7;">Active</span>
+        </div>
+        <div class="progress-bar-wrap" style="margin-top:14px;">
+          <div class="progress-bar-fill" style="width:45%; background: var(--cobalt-blue);"></div>
+        </div>
+        <p class="progress-label">~45% through the material</p>
+      </article>
+
+      <!-- Colorado Wilderness Medicine -->
+      <article class="academic-card reveal" style="border-left-color: var(--emergency-red);">
+        <h3>Wilderness Medicine</h3>
+        <p class="org">Colorado — Wilderness Medical Associates</p>
+        <div style="display:flex; align-items:center;">
+          <span class="pulsing-dot" style="background:var(--emergency-red);"></span>
+          <span style="font-family:var(--font-accent); font-size:0.8rem; opacity:0.7;">Active</span>
+        </div>
+        <div class="progress-bar-wrap" style="margin-top:14px;">
+          <div class="progress-bar-fill" style="width:70%; background: var(--emergency-red);"></div>
+        </div>
+        <p class="progress-label">~70% through the material</p>
+      </article>
+
+      <!-- Google Data Analytics -->
+      <article class="academic-card reveal" style="border-left-color: var(--electric-green);">
+        <h3>Google Data Analytics</h3>
+        <p class="org">Google — Coursera Professional Certificate</p>
+        <div style="display:flex; align-items:center;">
+          <span class="pulsing-dot" style="background:var(--electric-green);"></span>
+          <span style="font-family:var(--font-accent); font-size:0.8rem; opacity:0.7;">Active</span>
+        </div>
+        <div class="progress-bar-wrap" style="margin-top:14px;">
+          <div class="progress-bar-fill" style="width:80%; background: var(--electric-green);"></div>
+        </div>
+        <p class="progress-label">~80% through the material</p>
+      </article>
+
+    </div><!-- /academics-list -->
+
+  </div><!-- /page-content -->
+
+  <!-- Floating Bottom Nav -->
+  <nav id="bottom-nav" aria-label="Main navigation">
+    <a class="nav-link" href="index.html">
+      <i data-lucide="home"></i>
+      <span>Home</span>
+    </a>
+    <a class="nav-link" href="quals.html">
+      <i data-lucide="award"></i>
+      <span>Trophy Case</span>
+    </a>
+    <a class="nav-link" href="skills.html">
+      <i data-lucide="wrench"></i>
+      <span>The Kit</span>
+    </a>
+    <a class="nav-link" href="academics.html">
+      <i data-lucide="book-open"></i>
+      <span>Field Studies</span>
+    </a>
+  </nav>
+
+  <!-- GSAP via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Flip.min.js"></script>
+
+  <!-- Lucide icons via CDN -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+
+  <!-- Shared Script -->
+  <script src="script.js"></script>
+</body>
+</html>

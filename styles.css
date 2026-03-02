@@ -1,0 +1,526 @@
+/* ============================================================
+   PORTFOLIO — SAR High-Vis Field Gear Theme
+   Shared Stylesheet
+   ============================================================ */
+
+/* ---------- Google Fonts ---------- */
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap');
+
+/* ---------- CSS Custom Properties ---------- */
+:root {
+  --sar-orange:    #FF6700;
+  --emergency-red: #D72638;
+  --electric-green:#39FF14;
+  --cobalt-blue:   #1B4FFF;
+  --off-black:     #0D0D0D;
+  --chalk-white:   #F5F0E8;
+
+  --font-headline: 'Bebas Neue', sans-serif;
+  --font-body:     'Space Mono', monospace;
+  --font-accent:   'DM Sans', sans-serif;
+
+  --nav-height:    72px;
+}
+
+/* ---------- Reset & Base ---------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--off-black);
+  color: var(--chalk-white);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+  cursor: none; /* custom cursor takes over */
+  overflow-x: hidden;
+  min-height: 100vh;
+  padding-bottom: calc(var(--nav-height) + 32px);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ---------- Custom Cursor ---------- */
+#cursor-blob {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: var(--chalk-white);
+  pointer-events: none;
+  z-index: 9999;
+  mix-blend-mode: difference;
+  transform: translate(-50%, -50%);
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+#cursor-blob.hovered {
+  background-color: var(--electric-green);
+  transform: translate(-50%, -50%) scale(1.5);
+}
+
+/* ---------- SVG Background Grid ---------- */
+#bg-grid {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.07;
+}
+
+/* ---------- Page Content Wrapper ---------- */
+#page-content {
+  position: relative;
+  z-index: 1;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 60px 32px 32px;
+}
+
+/* ---------- Typography ---------- */
+h1, h2, h3 {
+  font-family: var(--font-headline);
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+}
+
+h1 { font-size: clamp(3rem, 8vw, 7rem); color: var(--chalk-white); }
+h2 { font-size: clamp(2rem, 5vw, 4rem); color: var(--sar-orange); }
+h3 { font-size: clamp(1.2rem, 2.5vw, 1.8rem); color: var(--chalk-white); }
+
+p {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  color: var(--chalk-white);
+  opacity: 0.85;
+}
+
+/* ---------- Torn-sticker Section Title ---------- */
+.section-title {
+  display: inline-block;
+  font-family: var(--font-headline);
+  font-size: clamp(2.5rem, 6vw, 5rem);
+  color: var(--off-black);
+  background: var(--sar-orange);
+  padding: 4px 20px 8px;
+  margin-bottom: 60px;
+  position: relative;
+  /* Torn-edge effect with clip-path */
+  clip-path: polygon(
+    0% 0%, 2% 3%, 5% 0%, 8% 4%, 11% 1%, 14% 3%,
+    17% 0%, 20% 4%, 23% 1%, 26% 3%, 29% 0%, 32% 4%,
+    35% 1%, 38% 3%, 41% 0%, 44% 4%, 47% 1%, 50% 3%,
+    53% 0%, 56% 4%, 59% 1%, 62% 3%, 65% 0%, 68% 4%,
+    71% 1%, 74% 3%, 77% 0%, 80% 4%, 83% 1%, 86% 3%,
+    89% 0%, 92% 4%, 95% 1%, 98% 3%, 100% 0%,
+    100% 100%, 98% 97%, 95% 100%, 92% 96%, 89% 100%,
+    86% 97%, 83% 100%, 80% 96%, 77% 100%, 74% 97%,
+    71% 100%, 68% 96%, 65% 100%, 62% 97%, 59% 100%,
+    56% 96%, 53% 100%, 50% 97%, 47% 100%, 44% 96%,
+    41% 100%, 38% 97%, 35% 100%, 32% 96%, 29% 100%,
+    26% 97%, 23% 100%, 20% 96%, 17% 100%, 14% 97%,
+    11% 100%, 8% 96%, 5% 100%, 2% 97%, 0% 100%
+  );
+}
+
+/* ---------- Scattered Card Layout (anti-grid) ---------- */
+.cards-scatter {
+  position: relative;
+  min-height: 600px;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--chalk-white);
+  color: var(--off-black);
+  border-radius: 4px;
+  padding: 24px 28px;
+  position: relative;
+  display: inline-block;
+  cursor: none;
+  /* rotation assigned per-card by JS */
+  box-shadow: 4px 6px 24px rgba(0,0,0,0.6);
+  transition: box-shadow 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: 8px 12px 40px rgba(0,0,0,0.8);
+  z-index: 10;
+}
+
+.card h3 {
+  color: var(--off-black);
+  font-size: 1.4rem;
+  margin-bottom: 6px;
+}
+
+.card .org {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  color: var(--off-black);
+  opacity: 0.65;
+  margin-bottom: 14px;
+}
+
+/* ---------- Category Tags ---------- */
+.tag {
+  display: inline-block;
+  font-family: var(--font-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+
+.tag-orange { background: var(--sar-orange);    color: var(--off-black); }
+.tag-blue   { background: var(--cobalt-blue);   color: var(--chalk-white); }
+.tag-green  { background: var(--electric-green);color: var(--off-black); }
+
+/* ---------- Status Pill ---------- */
+.status-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-top: 28px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-accent);
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: var(--sar-orange);
+  color: var(--off-black);
+  position: relative;
+  overflow: visible;
+  transition: background-color 0.4s ease;
+}
+
+/* Pulse ring around pill */
+.status-pill::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  opacity: 0;
+  animation: pulse-ring 2s ease-out infinite;
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(1);    opacity: 0.6; }
+  100% { transform: scale(1.15); opacity: 0; }
+}
+
+.status-text {
+  transition: opacity 0.3s ease;
+}
+
+.status-gear-btn {
+  background: transparent;
+  border: none;
+  cursor: none;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+
+.status-gear-btn:hover {
+  opacity: 1;
+}
+
+/* Status dropdown */
+.status-dropdown {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  background: #1a1a1a;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 12px;
+  overflow: hidden;
+  z-index: 100;
+  min-width: 200px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+.status-dropdown.open {
+  display: block;
+}
+
+.status-option {
+  display: block;
+  width: 100%;
+  padding: 12px 18px;
+  font-family: var(--font-accent);
+  font-size: 0.88rem;
+  background: transparent;
+  border: none;
+  color: var(--chalk-white);
+  text-align: left;
+  cursor: none;
+  transition: background 0.15s;
+}
+
+.status-option:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.status-option.active {
+  color: var(--sar-orange);
+}
+
+/* ---------- Interest Tags (floating) ---------- */
+.interests-area {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 48px;
+}
+
+.interest-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-family: var(--font-accent);
+  font-size: 0.88rem;
+  color: var(--chalk-white);
+  /* bob animation driven by GSAP */
+}
+
+/* ---------- Hero Compass Icon ---------- */
+.hero-icon-wrap {
+  display: flex;
+  justify-content: center;
+  margin: 40px 0 32px;
+  color: var(--sar-orange);
+}
+
+.hero-icon-wrap svg {
+  width: 120px;
+  height: 120px;
+  stroke: var(--sar-orange);
+  stroke-width: 1.2;
+  fill: none;
+  /* float animation driven by GSAP */
+}
+
+/* ---------- Bio Block ---------- */
+.bio {
+  max-width: 620px;
+  margin: 24px 0 12px;
+}
+
+.bio p {
+  font-size: 1.0rem;
+  line-height: 1.7;
+  opacity: 0.9;
+  margin-bottom: 8px;
+}
+
+/* ---------- Skills Cards (3D tilt) ---------- */
+.skills-grid {
+  position: relative;
+  min-height: 500px;
+}
+
+.skill-card {
+  background: var(--chalk-white);
+  color: var(--off-black);
+  border-radius: 6px;
+  padding: 28px 32px;
+  position: relative;
+  display: inline-block;
+  cursor: none;
+  box-shadow: 4px 6px 24px rgba(0,0,0,0.6);
+  /* perspective for 3D tilt */
+  transform-style: preserve-3d;
+  will-change: transform;
+  transition: box-shadow 0.2s ease;
+}
+
+.skill-card h3 {
+  color: var(--off-black);
+  font-size: 1.6rem;
+  margin-bottom: 6px;
+}
+
+.skill-card .skill-sub {
+  font-family: var(--font-accent);
+  font-size: 0.8rem;
+  color: var(--sar-orange);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ---------- Academic Cards ---------- */
+.academics-list {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  max-width: 700px;
+}
+
+.academic-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-left: 4px solid var(--sar-orange);
+  border-radius: 8px;
+  padding: 28px 32px;
+  position: relative;
+}
+
+.academic-card h3 {
+  font-size: 1.5rem;
+  margin-bottom: 6px;
+}
+
+.academic-card .org {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  opacity: 0.6;
+  margin-bottom: 16px;
+}
+
+/* Animated progress indicator */
+.progress-bar-wrap {
+  background: rgba(255,255,255,0.08);
+  border-radius: 999px;
+  height: 6px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sar-orange);
+  position: relative;
+  overflow: hidden;
+}
+
+/* shimmer sweep */
+.progress-bar-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  animation: shimmer 2.2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%   { left: -60%; }
+  100% { left: 120%; }
+}
+
+.progress-label {
+  font-family: var(--font-accent);
+  font-size: 0.78rem;
+  opacity: 0.6;
+  margin-top: 8px;
+}
+
+.pulsing-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--electric-green);
+  margin-right: 8px;
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ---------- Floating Bottom Nav ---------- */
+#bottom-nav {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(120px); /* starts off-screen — GSAP springs it up */
+  z-index: 1000;
+  background: rgba(13, 13, 13, 0.75);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  padding: 12px 28px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  white-space: nowrap;
+}
+
+.nav-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(245,240,232,0.55);
+  transition: color 0.2s ease;
+  cursor: none;
+}
+
+.nav-link svg {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+}
+
+.nav-link:hover,
+.nav-link.active {
+  color: var(--sar-orange);
+}
+
+/* ---------- Headline letter-span animation ---------- */
+.hero-headline .char {
+  display: inline-block;
+  /* each bounced in by GSAP with elastic ease */
+}
+
+/* ---------- Scroll reveal utility ---------- */
+/* Note: initial opacity/transform set entirely by GSAP gsap.from(),
+   so elements remain visible if JS fails to load. */
+.reveal {
+  will-change: transform, opacity;
+}

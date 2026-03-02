@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hamo — Trophy Case</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Shared Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <style>
+    /* ── Quals-specific scattered layout ── */
+    .cards-scatter {
+      /* Use CSS columns as a loose starting grid;
+         GSAP scroll-trigger + JS rotations provide the scattered feel */
+      columns: 2;
+      column-gap: 40px;
+      min-height: unset;
+    }
+
+    .card {
+      /* Break inside columns */
+      break-inside: avoid;
+      margin-bottom: 40px;
+      width: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Custom cursor blob -->
+  <div id="cursor-blob"></div>
+
+  <!-- Animated SVG background grid -->
+  <svg id="bg-grid" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"
+       xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <pattern id="grid-pat" x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#F5F0E8" stroke-width="0.3"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid-pat)" />
+  </svg>
+
+  <!-- Page Content -->
+  <div id="page-content">
+
+    <h2 class="section-title">THE TROPHY CASE</h2>
+
+    <!-- Scattered cert cards -->
+    <div class="cards-scatter" aria-label="Certifications">
+
+      <article class="card reveal">
+        <h3>First Aid</h3>
+        <p class="org">Firstaidpro</p>
+        <span class="tag tag-orange">Field / Outdoor</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>EMT-B</h3>
+        <p class="org">Coursera / University of Colorado</p>
+        <span class="tag tag-orange">Field / Outdoor</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>Wilderness First Aid</h3>
+        <p class="org">Colorado</p>
+        <span class="tag tag-orange">Field / Outdoor</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>Geospatial Analysis</h3>
+        <p class="org">University of Toronto</p>
+        <span class="tag tag-blue">Academic</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>Google Data Analytics</h3>
+        <p class="org">Google</p>
+        <span class="tag tag-green">Tech</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>Meteorology</h3>
+        <p class="org">Harvard Online</p>
+        <span class="tag tag-blue">Academic</span>
+      </article>
+
+      <article class="card reveal">
+        <h3>HAM Radio Licensed</h3>
+        <p class="org">ARRL / FCC</p>
+        <span class="tag tag-green">Tech</span>
+      </article>
+
+    </div><!-- /cards-scatter -->
+
+  </div><!-- /page-content -->
+
+  <!-- Floating Bottom Nav -->
+  <nav id="bottom-nav" aria-label="Main navigation">
+    <a class="nav-link" href="index.html">
+      <i data-lucide="home"></i>
+      <span>Home</span>
+    </a>
+    <a class="nav-link" href="quals.html">
+      <i data-lucide="award"></i>
+      <span>Trophy Case</span>
+    </a>
+    <a class="nav-link" href="skills.html">
+      <i data-lucide="wrench"></i>
+      <span>The Kit</span>
+    </a>
+    <a class="nav-link" href="academics.html">
+      <i data-lucide="book-open"></i>
+      <span>Field Studies</span>
+    </a>
+  </nav>
+
+  <!-- GSAP via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Flip.min.js"></script>
+
+  <!-- Lucide icons via CDN -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+
+  <!-- Shared Script -->
+  <script src="script.js"></script>
+</body>
+</html>

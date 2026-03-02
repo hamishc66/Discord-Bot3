@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hamo — Home</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Shared Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Custom cursor blob -->
+  <div id="cursor-blob"></div>
+
+  <!-- Animated SVG background grid -->
+  <svg id="bg-grid" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"
+       xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <pattern id="grid-pat" x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#F5F0E8" stroke-width="0.3"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid-pat)" />
+  </svg>
+
+  <!-- Page Content -->
+  <div id="page-content">
+
+    <!-- Hero -->
+    <section class="hero-section">
+      <!-- Decorative compass icon -->
+      <div class="hero-icon-wrap" aria-hidden="true">
+        <i data-lucide="compass"></i>
+      </div>
+
+      <!-- Staggered headline -->
+      <h1 class="hero-headline">Hey! I'm Hamish, you can call me Hamo</h1>
+    </section>
+
+    <!-- Bio -->
+    <section class="bio">
+      <p>Outdoors-obsessed, technically-minded, always studying something.</p>
+      <p>When I'm not on a trail I'm probably inside a radio shack, a textbook, or a data set. One day, end-to-end PCT.</p>
+      <p>Wilderness medicine, geospatial analysis, and HAM radio — simultaneously.</p>
+    </section>
+
+    <!-- Current Status Pill -->
+    <div class="status-wrapper">
+      <div class="status-pill" id="status-pill">
+        <span class="status-text" id="status-text">🏔️ Probably Outside</span>
+        <button class="status-gear-btn" id="status-gear-btn" aria-label="Change status">
+          <i data-lucide="settings-2"></i>
+        </button>
+      </div>
+
+      <!-- Status override dropdown -->
+      <div class="status-dropdown" id="status-dropdown" role="menu">
+        <button class="status-option" data-label="🏔️ Probably Outside" role="menuitem">🏔️ Probably Outside</button>
+        <button class="status-option" data-label="📚 Studying"          role="menuitem">📚 Studying</button>
+        <button class="status-option" data-label="📡 On Air (HAM)"      role="menuitem">📡 On Air (HAM)</button>
+        <button class="status-option" data-label="🔴 In the Field"      role="menuitem">🔴 In the Field</button>
+        <button class="status-option" data-label="💤 AFK"               role="menuitem">💤 AFK</button>
+        <button class="status-option" data-label="clear"                role="menuitem" style="border-top:1px solid rgba(255,255,255,0.1); color:rgba(245,240,232,0.4);">↺ Resume cycling</button>
+      </div>
+    </div>
+
+    <!-- Interests -->
+    <section class="interests-area" aria-label="Interests">
+      <span class="interest-tag">🏔️ Hiking &amp; Backpacking</span>
+      <span class="interest-tag">📡 HAM Radio</span>
+      <span class="interest-tag">📷 Photography</span>
+      <span class="interest-tag">🧭 Navigation &amp; Orienteering</span>
+      <span class="interest-tag">🌦️ Meteorology</span>
+      <span class="interest-tag">🗺️ Geospatial / Mapping</span>
+      <span class="interest-tag">📊 Data Analytics</span>
+      <span class="interest-tag">⛑️ Wilderness Medicine</span>
+    </section>
+
+  </div><!-- /page-content -->
+
+  <!-- Floating Bottom Nav -->
+  <nav id="bottom-nav" aria-label="Main navigation">
+    <a class="nav-link" href="index.html">
+      <i data-lucide="home"></i>
+      <span>Home</span>
+    </a>
+    <a class="nav-link" href="quals.html">
+      <i data-lucide="award"></i>
+      <span>Trophy Case</span>
+    </a>
+    <a class="nav-link" href="skills.html">
+      <i data-lucide="wrench"></i>
+      <span>The Kit</span>
+    </a>
+    <a class="nav-link" href="academics.html">
+      <i data-lucide="book-open"></i>
+      <span>Field Studies</span>
+    </a>
+  </nav>
+
+  <!-- GSAP via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Flip.min.js"></script>
+
+  <!-- Lucide icons via CDN -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+
+  <!-- Shared Script -->
+  <script src="script.js"></script>
+</body>
+</html>

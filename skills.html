@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hamo — The Kit</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- Shared Stylesheet -->
+  <link rel="stylesheet" href="styles.css" />
+
+  <style>
+    /* ── Skills-specific scattered layout ── */
+    .skills-grid {
+      columns: 2;
+      column-gap: 40px;
+    }
+
+    .skill-card {
+      break-inside: avoid;
+      margin-bottom: 40px;
+      width: 100%;
+      display: block;
+    }
+
+    /* Gear-patch aesthetic: bold accent border */
+    .skill-card {
+      border-top: 5px solid var(--sar-orange);
+    }
+
+    .skill-card:nth-child(2n) {
+      border-top-color: var(--cobalt-blue);
+    }
+
+    .skill-card:nth-child(3n) {
+      border-top-color: var(--electric-green);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Custom cursor blob -->
+  <div id="cursor-blob"></div>
+
+  <!-- Animated SVG background grid -->
+  <svg id="bg-grid" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"
+       xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <pattern id="grid-pat" x="0" y="0" width="10" height="10" patternUnits="userSpaceOnUse">
+        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="#F5F0E8" stroke-width="0.3"/>
+      </pattern>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#grid-pat)" />
+  </svg>
+
+  <!-- Page Content -->
+  <div id="page-content">
+
+    <h2 class="section-title">THE KIT</h2>
+
+    <!-- Scattered skill cards (3D tilt via JS) -->
+    <div class="skills-grid" aria-label="Hard skills">
+
+      <article class="skill-card reveal">
+        <h3>Lead Rope Rock Climbing</h3>
+        <span class="skill-sub">Outdoor / Field</span>
+      </article>
+
+      <article class="skill-card reveal">
+        <h3>Basic Engine Repair</h3>
+        <span class="skill-sub">Technical</span>
+      </article>
+
+      <article class="skill-card reveal">
+        <h3>HAM Radio Operation</h3>
+        <span class="skill-sub">Communications / Tech</span>
+      </article>
+
+      <article class="skill-card reveal">
+        <h3>Navigation &amp; Orienteering</h3>
+        <span class="skill-sub">Outdoor / Field</span>
+      </article>
+
+      <article class="skill-card reveal">
+        <h3>Weather Interpretation</h3>
+        <span class="skill-sub">Field Science</span>
+      </article>
+
+      <article class="skill-card reveal">
+        <h3>Photography</h3>
+        <span class="skill-sub">Visual / Creative</span>
+      </article>
+
+    </div><!-- /skills-grid -->
+
+  </div><!-- /page-content -->
+
+  <!-- Floating Bottom Nav -->
+  <nav id="bottom-nav" aria-label="Main navigation">
+    <a class="nav-link" href="index.html">
+      <i data-lucide="home"></i>
+      <span>Home</span>
+    </a>
+    <a class="nav-link" href="quals.html">
+      <i data-lucide="award"></i>
+      <span>Trophy Case</span>
+    </a>
+    <a class="nav-link" href="skills.html">
+      <i data-lucide="wrench"></i>
+      <span>The Kit</span>
+    </a>
+    <a class="nav-link" href="academics.html">
+      <i data-lucide="book-open"></i>
+      <span>Field Studies</span>
+    </a>
+  </nav>
+
+  <!-- GSAP via CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/Flip.min.js"></script>
+
+  <!-- Lucide icons via CDN -->
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+
+  <!-- Shared Script -->
+  <script src="script.js"></script>
+</body>
+</html>
